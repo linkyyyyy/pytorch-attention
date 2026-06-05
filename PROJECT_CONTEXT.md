@@ -280,7 +280,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
     to the CPU and lose the NPU's energy advantage entirely. Together: a model must have fixed input
     dimensions AND be quantized to INT8 *before* the compiler sees it, or it will not run on the NPU.
 
-- **2026-06-05 (Day 3):** Architecture deep-dive — all five shortlisted models read; operator roles
+- **2026-06-04/5 (Day 3/4):** Architecture deep-dive — all five shortlisted models read; operator roles
   and NPU implications documented. Reference: `operator_architecture_selection.md` (Opus-generated
   baseline) for the cluster framework; this entry adds the per-model and NPU-specific detail.
 
@@ -342,3 +342,24 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   - ViT and XCiT are the cleanest NPU matmul-shape experiment: same isotropic topology, same FLOP order of magnitude, but [197×197] vs [64×64] attention matrices → tests whether matrix *shape* affects NPU utilization.
   - PvT's SR conv before attention and PoolFormer's pooling-only mixer test whether NPU conv engines outperform attention for mixing.
   - EfficientFormer's 49-token MHSA is the edge case: can the NPU profitably accelerate a 49×49 matmul, or does dispatch overhead dominate?
+
+  **Files created (Day 3/4 — Cursor-generated benchmark harness):**
+
+  | File | Purpose |
+  |---|---|
+  | `benchmark/operators.py` | Operator registry (16 entries, Clusters A/B1/B2) + ONNX graph builders + one-time export |
+  | `benchmark/harness.py` | Single shared measurement loop — argparse, ORT session setup, WINDOW_OPEN/CLOSE markers, CSV append, EP placement verification |
+  | `benchmark/run_sweep.bat` | CMD orchestrator: conda activate → create session dir → uProf parent-wraps harness per (operator × engine × repeat) |
+  | `benchmark/BENCHMARK_WORKFLOW.md` | User-facing CMD workflow guide (prerequisites, export, smoke test, baselines, sweep, troubleshooting) |
+  | `benchmark/IMPLEMENTATION_BLUEPRINT.md` | Design spec: registry schema, harness CLI, dispatch baseline rationale, CSV schema, uProf parent-wrap pattern, locked defaults |
+  | `benchmark/onnx_graphs/` | 16 pre-exported `.onnx` operator graphs (+ `dispatch_baseline.onnx`) for Netron inspection and ORT sessions |
+  | `benchmark/results/` | Empty placeholder — `runs.csv` and `upprof/<SESSION_TS>/` populate during measurement |
+  | `directives/measurement_harness_spec.md` | Protocol spec: measurement philosophy, session options, loop structure, baselines, uProf integration, CSV schema, validity checklist |
+  | `directives/operator_architecture_selection.md` | Architecture & operator selection rationale (Opus-generated; authoritative cluster definitions) |
+
+- **TODO next (Day 5 — on the HX 370 tower):**
+  1. **uProf child-launch flag syntax:** Run `AMDuProfCLI.exe timechart --help` on the tower and fill in the verified flags in `run_sweep.bat` (the `TODO: UPROF FLAGS` block in §4.3 of `IMPLEMENTATION_BLUEPRINT.md`). Confirm the exact flag for child-process launch (`--`, `/command`, or similar).
+  2. **uProf timestamp base:** Inspect a real uProf CSV output to determine whether timestamps are absolute system time or elapsed-since-collection-start. If elapsed, record the collection start wall-clock epoch immediately alongside `AMDuProfCLI` launch and document the offset approach in `results/metadata.json`. See `BENCHMARK_WORKFLOW.md` §2 and `measurement_harness_spec.md` §7.
+  3. **Confirm `ortvalue_from_numpy(arr, "dml", 0)` works on this ORT build:** The `onnxruntime-directml` build in `ryzen-ai-1.6.0` may or may not expose `OrtValue.ortvalue_from_numpy` with a DML device string. Run a quick smoke test; if unavailable, the harness feed dict (plain numpy) is the fallback and already implemented.
+  4. **`synchronize_outputs()` line:** DML is asynchronous — results may not be flushed when `sess.run()` returns. If latency measurements look suspiciously fast, add `sess.synchronize_outputs()` (or equivalent) inside the loop. If already confirmed unnecessary for the ORT build in use, cross this off.
+  5. **Run idle + dispatch baselines on both engines:** Execute the baseline CMD examples from `BENCHMARK_WORKFLOW.md` §5 under uProf (once uProf flags are confirmed from item 1). Capture `idle_cpu`, `idle_igpu`, `dispatch_cpu`, `dispatch_igpu` as the session's energy floor and overhead reference before running any operator sweeps.
