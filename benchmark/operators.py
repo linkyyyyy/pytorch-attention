@@ -2,7 +2,7 @@
 operators.py — ONNX operator registry and graph export for energy benchmarking.
 
 Each registry entry maps to (build_fn, shape_profiles, dtype, cluster).
-Exports minimal single-operator graphs at a globally resolved ONNX opset (20, else 19).
+Exports minimal single-operator graphs at ONNX opset 20 (torch.onnx.export falls back to 19).
 """
 
 from __future__ import annotations
@@ -31,21 +31,7 @@ class OperatorEntry:
     cluster: str
 
 
-def resolve_global_opset() -> int:
-    """Pick opset 20 globally; fall back to 19 if Gelu schema is unavailable at 20."""
-    import onnx
-    from onnx import defs
-
-    for opset in (PREFERRED_OPSET, FALLBACK_OPSET):
-        try:
-            defs.get_schema("Gelu", opset, "")
-            return opset
-        except defs.SchemaError:
-            continue
-    return FALLBACK_OPSET
-
-
-OPSET = resolve_global_opset()
+OPSET = PREFERRED_OPSET
 
 
 def _onnx_path(name: str, shape_index: int) -> Path:
@@ -60,21 +46,43 @@ def export_torch_module(
     dummy_inputs: tuple,
     input_names: list[str],
     output_names: list[str],
-    opset: int,
-) -> None:
+    opset: int = OPSET,
+) -> int:
+    """Export via PyTorch; fall back to opset 19 if opset 20 export fails."""
     import torch
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    export_input = dummy_inputs if len(dummy_inputs) > 1 else dummy_inputs[0]
     with torch.no_grad():
-        torch.onnx.export(
-            module,
-            dummy_inputs if len(dummy_inputs) > 1 else dummy_inputs[0],
-            str(path),
-            input_names=input_names,
-            output_names=output_names,
-            opset_version=opset,
-            dynamo=False,
-        )
+        try:
+            torch.onnx.export(
+                module,
+                export_input,
+                str(path),
+                input_names=input_names,
+                output_names=output_names,
+                opset_version=opset,
+                dynamo=False,
+            )
+            return opset
+        except Exception as exc:
+            if opset == FALLBACK_OPSET:
+                raise
+            warnings.warn(
+                f"torch.onnx.export failed at opset {opset} for {path.name}; "
+                f"retrying opset {FALLBACK_OPSET}: {exc}",
+                stacklevel=2,
+            )
+            torch.onnx.export(
+                module,
+                export_input,
+                str(path),
+                input_names=input_names,
+                output_names=output_names,
+                opset_version=FALLBACK_OPSET,
+                dynamo=False,
+            )
+            return FALLBACK_OPSET
 
 
 def _batched_matmul_output_shape(a_shape: list[int], b_shape: list[int]) -> list[int]:
@@ -181,22 +189,23 @@ def build_dispatch_baseline_graph(path: Path, opset: int) -> dict[str, Any]:
     }
 
 
-def verify_gelu_graph(path: Path) -> list[str]:
+def build_onnx_gelu_graph(path: Path, shape: list[int], opset: int) -> dict[str, Any]:
+    """Direct single-node Gelu graph (bypasses PyTorch export decomposition)."""
     import onnx
+    from onnx import TensorProto, helper
 
-    model = onnx.load(str(path))
-    gelu_nodes = [n for n in model.graph.node if n.op_type == "Gelu"]
-    notes: list[str] = []
-    if len(gelu_nodes) != 1:
-        decomposed = [n.op_type for n in model.graph.node]
-        msg = (
-            f"gelu.onnx: expected exactly one Gelu node at opset {OPSET}, "
-            f"found {len(gelu_nodes)}; node types={decomposed}. "
-            "Gelu is native only at opset 20 — graph may have decomposed."
-        )
-        warnings.warn(msg, stacklevel=2)
-        notes.append(msg)
-    return notes
+    path.parent.mkdir(parents=True, exist_ok=True)
+    x_info = helper.make_tensor_value_info("input", TensorProto.FLOAT, shape)
+    y_info = helper.make_tensor_value_info("output", TensorProto.FLOAT, shape)
+    node = helper.make_node("Gelu", ["input"], ["output"])
+    graph = helper.make_graph([node], "gelu", [x_info], [y_info])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    onnx.checker.check_model(model)
+    onnx.save(model, str(path))
+    return {
+        "feeds": {"input": RNG.standard_normal(shape, dtype=np.float32)},
+        "output_names": ["output"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -243,28 +252,14 @@ def _build_ffn_gemm(path: Path, profile: dict[str, Any], opset: int) -> dict[str
     import torch.nn as nn
 
     m, k, n = 197, 768, 3072
-    model = nn.Linear(k, n, bias=False).eval()
+    model = nn.Linear(k, n, bias=True).eval()
     x = torch.randn(m, k)
     export_torch_module(model, path, (x,), ["input"], ["output"], opset)
     return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
 
 
 def _build_gelu(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
-    import torch
-    import torch.nn as nn
-
-    class GeluModule(nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.act = nn.GELU()
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            return self.act(x)
-
-    x = torch.randn(197, 3072)
-    export_torch_module(GeluModule().eval(), path, (x,), ["input"], ["output"], opset)
-    verify_gelu_graph(path)
-    return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
+    return build_onnx_gelu_graph(path, [197, 3072], opset)
 
 
 def _build_layer_norm(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
@@ -306,7 +301,7 @@ def _build_qkv_proj(path: Path, profile: dict[str, Any], opset: int) -> dict[str
     import torch
     import torch.nn as nn
 
-    model = nn.Linear(768, 768, bias=False).eval()
+    model = nn.Linear(768, 768, bias=True).eval()
     x = torch.randn(197, 768)
     export_torch_module(model, path, (x,), ["input"], ["output"], opset)
     return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
@@ -611,12 +606,10 @@ def build_operator_graph(name: str, shape_index: int = 0) -> tuple[Path, dict[st
 
 def export_all_graphs(all_shapes: bool = False) -> None:
     ONNX_GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"[operators] Global ONNX opset: {OPSET} (preferred={PREFERRED_OPSET}, fallback={FALLBACK_OPSET})")
-    if OPSET < PREFERRED_OPSET:
-        warnings.warn(
-            f"Using fallback opset {OPSET}; Gelu may decompose. Native Gelu requires opset 20.",
-            stacklevel=2,
-        )
+    print(
+        f"[operators] ONNX helper opset: {OPSET}; "
+        f"torch.onnx.export falls back to {FALLBACK_OPSET} on failure"
+    )
 
     for name, entry in OPERATOR_REGISTRY.items():
         shape_indices = range(len(entry.shape_profiles)) if all_shapes else [0]

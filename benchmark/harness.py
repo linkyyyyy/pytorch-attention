@@ -15,7 +15,6 @@ import argparse
 import csv
 import json
 import os
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,6 +78,13 @@ def _ensure_dispatch_baseline() -> Path:
     return DISPATCH_BASELINE_PATH
 
 
+def _read_graph_opset(onnx_path: Path) -> int:
+    import onnx
+
+    model = onnx.load(str(onnx_path), load_external_data=False)
+    return int(model.opset_import[0].version)
+
+
 def _write_metadata_once() -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     if METADATA_PATH.exists():
@@ -100,7 +106,7 @@ def _write_metadata_once() -> None:
         "graph_optimization_level": GRAPH_OPTIMIZATION_LEVEL_NAME,
         "igpu_vgm_mb": _igpu_vgm_mb(),
         "conda_env": os.environ.get("CONDA_DEFAULT_ENV", ""),
-        "upref_version": "",  # fill manually after session
+        "uprof_version": "",  # fill manually after session
         "gpu_driver_version": "",  # fill manually after session
         "notes": (
             "energy_per_op = (window_energy - dispatch_energy) / iterations; "
@@ -140,6 +146,7 @@ def _create_session(onnx_path: Path, engine: str, device_id: int, enable_profili
 
 def _check_ep_placement(sess: Any, engine: str) -> str:
     notes: list[str] = []
+    prof_file: str | None = None
     try:
         prof_file = sess.end_profiling()
         if not prof_file:
@@ -147,15 +154,66 @@ def _check_ep_placement(sess: Any, engine: str) -> str:
         with open(prof_file, encoding="utf-8") as f:
             data = json.load(f)
         expected = "CPUExecutionProvider" if engine == "cpu" else "DmlExecutionProvider"
+        fallbacks: list[str] = []
         for item in data:
-            provider = item.get("provider", "")
+            args = item.get("args", {})
+            provider = args.get("provider", "") if isinstance(args, dict) else ""
             if provider and provider != expected:
-                notes.append(f"EP_FALLBACK: node '{item.get('name')}' on {provider}")
-        if not notes:
+                fallbacks.append(f"EP_FALLBACK: node '{item.get('name')}' on {provider}")
+        if fallbacks:
+            notes.extend(fallbacks)
+        else:
             notes.append(f"EP_OK: intended={expected}")
     except Exception as exc:
         notes.append(f"EP_CHECK_ERROR: {exc}")
+    finally:
+        if prof_file:
+            try:
+                os.remove(prof_file)
+            except OSError:
+                pass
     return "; ".join(notes)
+
+
+def _create_io_binding(
+    sess: Any,
+    feeds: dict[str, np.ndarray],
+    output_names: list[str],
+    engine: str,
+    device_id: int,
+) -> Any:
+    """Bind inputs/outputs once; reuse across iterations via run_with_iobinding."""
+    import onnxruntime as ort
+
+    io_binding = sess.io_binding()
+    for name, arr in feeds.items():
+        contiguous = np.ascontiguousarray(arr)
+        if engine == "igpu":
+            ort_value = ort.OrtValue.ortvalue_from_numpy(contiguous, "dml", device_id)
+            io_binding.bind_ortvalue_input(name, ort_value)
+        else:
+            io_binding.bind_cpu_input(name, contiguous)
+    for name in output_names:
+        if engine == "igpu":
+            io_binding.bind_output(name, "dml", device_id)
+        else:
+            io_binding.bind_output(name, "cpu")
+    return io_binding
+
+
+def _run_profile_check(
+    onnx_path: Path,
+    engine: str,
+    device_id: int,
+    feeds: dict[str, np.ndarray],
+    output_names: list[str],
+) -> str:
+    """Single profiled iteration before warmup; profiling never enters the timed window."""
+    sess_profile = _create_session(onnx_path, engine, device_id, enable_profiling=True)
+    print(f"[PROFILE_SESSION] providers={sess_profile.get_providers()}")
+    io_binding = _create_io_binding(sess_profile, feeds, output_names, engine, device_id)
+    sess_profile.run_with_iobinding(io_binding)
+    return _check_ep_placement(sess_profile, engine)
 
 
 def _duration_loop(
@@ -198,15 +256,17 @@ def _run_repeat(
     repeat_idx: int,
     outfile: Path,
     sess: Any | None,
-    feeds: dict[str, np.ndarray] | None,
-    output_names: list[str] | None,
+    io_binding: Any | None,
+    ep_note: str,
+    csv_opset: int | str,
 ) -> None:
     def execute() -> None:
         if mode == "idle":
             time.sleep(0.001)
         else:
-            assert sess is not None and feeds is not None and output_names is not None
-            sess.run(output_names, feeds)
+            assert sess is not None and io_binding is not None
+            sess.run_with_iobinding(io_binding)
+            io_binding.synchronize_outputs()  # 1 iteration = 1 completed GPU execution
 
     print(
         f"[WARMUP_START] run_id={run_id} mode={mode} engine={engine} "
@@ -217,7 +277,6 @@ def _run_repeat(
     print(f"[WARMUP_END] run_id={run_id}")
 
     t_start = time.time()
-    pc_start = time.perf_counter()
     print(
         f"[WINDOW_OPEN] run_id={run_id} t_start={t_start:.6f} "
         f"mode={mode} engine={engine} operator={operator}"
@@ -232,10 +291,6 @@ def _run_repeat(
     )
 
     mean_latency_ms = (wall_time_s / iterations * 1000.0) if iterations else float("nan")
-
-    ep_note = ""
-    if sess is not None and repeat_idx == 0:
-        ep_note = _check_ep_placement(sess, engine)
 
     notes_parts = [
         f"threads={INTRA_OP_NUM_THREADS}",
@@ -256,7 +311,7 @@ def _run_repeat(
             "shape_index": shape_index,
             "input_shape": input_shape,
             "dtype": dtype,
-            "opset": OPSET,
+            "opset": csv_opset,
             "intra_op_num_threads": INTRA_OP_NUM_THREADS,
             "graph_optimization_level": GRAPH_OPTIMIZATION_LEVEL_NAME,
             "igpu_vgm_mb": _igpu_vgm_mb(),
@@ -281,6 +336,8 @@ def run_harness(args: argparse.Namespace) -> None:
     _write_metadata_once()
     outfile = Path(args.outfile)
 
+    csv_opset: int | str = OPSET
+
     if args.mode == "measure":
         onnx_path, meta, entry = build_operator_graph(args.operator, args.shape_index)
         profile = entry.shape_profiles[args.shape_index]
@@ -288,6 +345,8 @@ def run_harness(args: argparse.Namespace) -> None:
         cluster = entry.cluster
         input_shape = profile["input_shape"]
         dtype = entry.dtype
+        csv_opset = _read_graph_opset(onnx_path)
+        print(f"[graph] operator={operator} opset={csv_opset} (read from {onnx_path.name})")
     elif args.mode == "dispatch":
         onnx_path = _ensure_dispatch_baseline()
         meta = {"feeds": {"input": np.array([0.5], dtype=np.float32)}, "output_names": ["output"]}
@@ -295,6 +354,7 @@ def run_harness(args: argparse.Namespace) -> None:
         cluster = "baseline"
         input_shape = "1"
         dtype = "float32"
+        csv_opset = _read_graph_opset(onnx_path)
     else:  # idle
         onnx_path = None
         meta = None
@@ -302,23 +362,39 @@ def run_harness(args: argparse.Namespace) -> None:
         cluster = "baseline"
         input_shape = "n/a"
         dtype = "n/a"
+        csv_opset = "n/a"
 
     base_run_id = args.run_id or f"{operator}_{args.engine}"
 
     for repeat_idx in range(args.repeats):
         run_id = f"{base_run_id}_r{repeat_idx}"
         sess = None
+        io_binding = None
+        ep_note = ""
         feeds = meta["feeds"] if meta else None
         output_names = meta["output_names"] if meta else None
 
         if args.mode != "idle":
+            if repeat_idx == 0:
+                ep_note = _run_profile_check(
+                    onnx_path,
+                    args.engine,
+                    args.device_id,
+                    feeds,
+                    output_names,
+                )
+                print(f"[EP_CHECK] run_id={run_id} {ep_note}")
+
             sess = _create_session(
                 onnx_path,
                 args.engine,
                 args.device_id,
-                enable_profiling=(repeat_idx == 0),
+                enable_profiling=False,
             )
-            print(f"[SESSION] run_id={run_id} providers={sess.get_providers()}")
+            print(f"[MEASURE_SESSION] run_id={run_id} providers={sess.get_providers()}")
+            io_binding = _create_io_binding(
+                sess, feeds, output_names, args.engine, args.device_id
+            )
 
         _run_repeat(
             run_id=run_id,
@@ -335,8 +411,9 @@ def run_harness(args: argparse.Namespace) -> None:
             repeat_idx=repeat_idx,
             outfile=outfile,
             sess=sess,
-            feeds=feeds,
-            output_names=output_names,
+            io_binding=io_binding,
+            ep_note=ep_note,
+            csv_opset=csv_opset,
         )
 
         if repeat_idx < args.repeats - 1:

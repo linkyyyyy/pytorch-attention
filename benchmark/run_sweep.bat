@@ -92,10 +92,17 @@ echo [SWEEP] complete. Session uProf dir: %UPROF_SESSION_DIR%
 echo [SWEEP] CSV: %OUTFILE%
 echo.
 echo --- Baseline templates (uncomment and run once per engine per session) ---
-echo REM Idle baseline (static floor):
+echo.
+echo REM Idle baseline - CPU (static floor):
 echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\idle_cpu_r0.csv" -- python harness.py --mode idle --engine cpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id idle_cpu_r0 --outfile %OUTFILE%
 echo.
-echo REM Dispatch baseline (launch overhead; non-elidable Add graph):
+echo REM Idle baseline - iGPU (static floor):
+echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\idle_igpu_r0.csv" -- python harness.py --mode idle --engine igpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id idle_igpu_r0 --outfile %OUTFILE%
+echo.
+echo REM Dispatch baseline - CPU (launch overhead; non-elidable Add graph):
+echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\dispatch_cpu_r0.csv" -- python harness.py --mode dispatch --engine cpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id dispatch_cpu_r0 --outfile %OUTFILE%
+echo.
+echo REM Dispatch baseline - iGPU (launch overhead; non-elidable Add graph):
 echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\dispatch_igpu_r0.csv" -- python harness.py --mode dispatch --engine igpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id dispatch_igpu_r0 --outfile %OUTFILE%
 
 endlocal
