@@ -2,9 +2,11 @@
 
 **Status:** PLAN ONLY — awaiting final human confirmation before any code is written.
 
+**Revision:** 2026-06-05 (incorporates six reviewer adjustments — see §11)
+
 **Authoritative specs:**
-- `measurement_harness_spec.md` (protocol wins on conflicts)
-- `operator_architecture_selection.md` (operator/cluster coverage)
+- `directives/measurement_harness_spec.md` (protocol wins on conflicts)
+- `directives/operator_architecture_selection.md` (operator/cluster coverage)
 
 **Platform:** AMD Ryzen AI 9 HX 370 · native Windows · CMD launch (not Cursor terminal for measured runs)
 
@@ -32,12 +34,15 @@ Latency recorded by the loop is a cross-check, never the headline number.
 
 ```
 benchmark/
-  operators.py              # registry + graph builders + one-time export
-  harness.py                # ONE shared measurement loop (all ops, engines, modes)
-  run_sweep.bat             # thin Windows CMD orchestrator (uProf brackets harness)
-  onnx_graphs/              # <operator_name>.onnx — minimal single-op graphs (Netron)
-  results/                  # CSV output, one row per run
-  BENCHMARK_WORKFLOW.md     # user-facing CMD workflow guide
+  operators.py                  # registry + graph builders + one-time export
+  harness.py                    # ONE shared measurement loop (all ops, engines, modes)
+  run_sweep.bat                 # thin Windows CMD orchestrator (uProf parent-wraps harness)
+  onnx_graphs/                  # <operator_name>[_<shape_idx>].onnx — Netron inspection
+  results/
+    runs.csv                    # one row per run (extended schema — §3.5)
+    metadata.json               # session-level constants (ORT ver, VGM, thread count, …)
+    upprof/                     # uProf output per run_id (post-alignment input)
+  BENCHMARK_WORKFLOW.md         # user-facing CMD workflow guide
   IMPLEMENTATION_BLUEPRINT.md   # this file
 ```
 
@@ -46,79 +51,98 @@ benchmark/
 - No per-engine Python files
 - No duplicate measurement loops
 - No energy integration inside Python (beyond CSV placeholders and alignment markers)
+- No multi-shape sweep execution (registry supports multiple shapes; v1 uses index 0 only)
 
-**Spec update on implementation:** Change `measurement_harness_spec.md` §1 and §7 references from `run_sweep.ps1` → `run_sweep.bat`, and document CMD + conda activation as the canonical launch path.
+**Spec update on implementation:** Update `directives/measurement_harness_spec.md` §1 and §7 (`run_sweep.ps1` → `run_sweep.bat`), dispatch baseline wording (Identity → non-elidable op), CSV schema extensions, and `INTRA_OP_NUM_THREADS = 12`.
 
 ---
 
 ## 2. `operators.py` — registry and ONNX graph factory
 
-### 2.1 Registry schema
+### 2.1 Registry schema (revised — multi-shape list)
 
 Single dict `OPERATOR_REGISTRY` mapping **canonical snake_case name** → tuple:
 
 ```python
-(name, build_fn, input_shape, dtype, cluster)
+(name, build_fn, shape_profiles, dtype, cluster)
 ```
 
 | Field | Meaning |
 |---|---|
-| `build_fn(onnx_path: Path) -> dict` | Builds minimal single-operator ONNX graph at opset 20, writes `onnx_graphs/<name>.onnx`, returns feed metadata `{"input_name": ..., "feed": {...}}` |
-| `input_shape` | Human-readable string for CSV (e.g. `"197x768"`, `"1x768x56x56"`) |
+| `build_fn(onnx_path: Path, shape_profile: dict) -> dict` | Builds minimal single-operator ONNX graph at opset 20 for the given profile; writes `onnx_graphs/<name>.onnx` (v1) or `<name>_s<idx>.onnx` (future multi-shape); returns feed metadata |
+| `shape_profiles` | **List** of shape-profile dicts (not a single hardcoded shape). v1 defaults to `shape_profiles[0]`. Future roofline/sensitivity sweeps iterate the list without schema changes. |
 | `dtype` | `"float32"` for this phase |
 | `cluster` | `"A"`, `"B1"`, or `"B2"` |
 
-A `if __name__ == "__main__"` block (or `export_all_graphs()`) pre-exports every registry entry so graphs can be inspected in Netron before measuring.
+**Shape profile dict structure (per list element):**
+
+```python
+{
+    "label": "vit_b16_default",          # human tag for CSV / filenames
+    "input_shape": "12x197x64@12x64x197", # CSV string (operator-specific convention)
+    "tensors": { ... },                   # concrete dims passed to build_fn
+}
+```
+
+**v1 harness behavior:** `--shape-index` flag (default `0`) selects `shape_profiles[shape_index]`. No sweep loop in v1 — only the plumbing to add one later.
+
+A `if __name__ == "__main__"` block exports every registry entry at index 0 (and optionally all indices with a `--all-shapes` flag for Netron inspection).
 
 ### 2.2 Build strategy
 
 | Approach | When used |
 |---|---|
 | **PyTorch → `torch.onnx.export`** | Conv2D, Linear/GEMM, GELU, LayerNorm, GroupNorm, BatchNorm, AvgPool, depthwise conv, Add |
-| **`onnx.helper` direct graph** | Bare `MatMul`, `Softmax`, or any op where export adds unwanted fusions |
+| **`onnx.helper` direct graph** | Batched `MatMul`, `Softmax`, or any op where export adds unwanted fusions |
 
 **Rules:**
 - Static shapes only (NPU path later)
 - No dynamic axes in benchmark graphs
-- Opset **20** everywhere (DML EP ceiling; NPU/Vitis path alignment)
-- Each graph: one compute node (+ constants if needed), explicit inputs/outputs
+- Opset **20** everywhere
+- Each graph: one primary compute node (+ constants if needed), explicit inputs/outputs
+- Batched attention matmuls use 3D batch dimension `H=12` as the leading axis (realistic MHA scheduling)
 
 ### 2.3 Operator inventory (spec §10)
 
-Shapes anchored to five-model discussion in `PROJECT_CONTEXT.md` (ViT-B/16: N=197, C=768, head_dim=64; PvT stage geometry; XCiT cross-cov; EfficientFormer 4D stages).
+Global constants for attention-family profiles:
+- **B** = 1 (single image)
+- **H** = 12 heads (ViT-B/16)
+- **N** = 197 tokens, **C** = 768, **head_dim** = 64
 
 #### Cluster A — 8 operators
 
-| Registry key | ONNX op(s) | Representative shape | Notes |
+| Registry key | ONNX op(s) | Default shape profile `[0]` | Notes |
 |---|---|---|---|
-| `patch_embed_conv2d` | Conv | input `[1,3,224,224]` → `[1,768,14,14]` | 16×16 kernel, stride 16 (ViT stem) |
-| `downsample_conv2d` | Conv | `[1,768,56,56]` → `[1,768,28,28]` | stride-2 downsampling (PvT/EF) |
-| `ffn_gemm` | Gemm/MatMul | `[197,768] @ [768,3072]` | FFN expansion (4×C) |
-| `gelu` | Gelu | `[197,3072]` | post-FFN activation size |
+| `patch_embed_conv2d` | Conv | `[1,3,224,224]` → `[1,768,14,14]` | 16×16 kernel, stride 16 |
+| `downsample_conv2d` | Conv | `[1,768,56,56]` → `[1,768,28,28]` | stride-2 downsampling |
+| `ffn_gemm` | Gemm | `[197,768] @ [768,3072]` | FFN expansion (4×C) |
+| `gelu` | Gelu | `[197,3072]` | post-FFN activation |
 | `layer_norm` | LayerNormalization | `[197,768]` | ViT/XCiT/PvT |
-| `group_norm` | GroupNorm | `[1,768,14,14]`, groups=32 | PoolFormer 4D |
+| `group_norm` | GroupNorm | `[1,768,14,14]`, **`num_groups=1`** | PoolFormer spec: groups=1 → LayerNorm-over-channels behavior |
 | `batch_norm` | BatchNormalization | `[1,256,56,56]` | EfficientFormer 4D |
 | `residual_add` | Add | `[197,768]` + `[197,768]` | skip connection |
 
+Each non-attention row has a `shape_profiles` list with one element today; additional profiles (e.g. smaller/larger N) can be appended later.
+
 #### Cluster B1 — 6 operators
 
-| Registry key | ONNX op(s) | Representative shape | Notes |
+| Registry key | ONNX op(s) | Default shape profile `[0]` | Notes |
 |---|---|---|---|
-| `qkv_proj_gemm` | Gemm | `[197,768] @ [768,768]` | single Q/K/V/output projection |
-| `attn_score_matmul` | MatMul | `[197,64] @ [64,197]` → `[197,197]` | ViT QKᵀ per head |
-| `xcit_cov_matmul` | MatMul | `[64,197] @ [197,64]` → `[64,64]` | XCiT cross-covariance |
-| `softmax` | Softmax | `[197,197]`, axis=-1 | attention normalization |
-| `attn_value_matmul` | MatMul | `[197,197] @ [197,64]` | attention·V |
-| `sra_conv2d` | Conv | `[1,768,56,56]` → `[1,768,7,7]` | PvT spatial reduction (~8×) on K/V path |
+| `qkv_proj_gemm` | Gemm | `[197,768] @ [768,768]` | single projection |
+| `attn_score_matmul` | MatMul | **`[12,197,64] @ [12,64,197]` → `[12,197,197]`** | batched multi-head QKᵀ |
+| `xcit_cov_matmul` | MatMul | **`[12,64,197] @ [12,197,64]` → `[12,64,64]`** | batched multi-head cross-covariance |
+| `softmax` | Softmax | `[12,197,197]`, axis=-1 | matches batched score tensor (logical companion to MHA matmuls) |
+| `attn_value_matmul` | MatMul | **`[12,197,197] @ [12,197,64]` → `[12,197,64]`** | batched multi-head attention·V |
+| `sra_conv2d` | Conv | `[1,768,56,56]` → `[1,768,7,7]` | PvT spatial reduction (~8×) |
 
 #### Cluster B2 — 2 operators
 
-| Registry key | ONNX op(s) | Representative shape | Notes |
+| Registry key | ONNX op(s) | Default shape profile `[0]` | Notes |
 |---|---|---|---|
-| `avg_pool_token_mixer` | AveragePool | `[1,768,14,14]` → `[1,768,7,7]` | PoolFormer/EF window pooling |
+| `avg_pool_token_mixer` | AveragePool | `[1,768,14,14]` → `[1,768,7,7]` | PoolFormer/EF pooling |
 | `depthwise_conv2d` | Conv (groups=C) | `[1,768,14,14]`, 3×3 depthwise | XCiT LPI |
 
-**Excluded from v1 (enrichment — spec §10):** `shift`, `token_mixing_mlp` — add only if explicitly approved.
+**Excluded from v1:** `shift`, `token_mixing_mlp` (enrichment only).
 
 **Total: 16 registry entries** × 2 engines this phase.
 
@@ -126,9 +150,20 @@ Shapes anchored to five-model discussion in `PROJECT_CONTEXT.md` (ViT-B/16: N=19
 
 - `OPSET = 20`
 - `ONNX_GRAPHS_DIR = Path(__file__).parent / "onnx_graphs"`
-- `make_feed_from_shape(...)` — deterministic `numpy` inputs (fixed seed)
-- `export_torch_module(module, path, dummy_input, input_names)` — shared export wrapper
-- `validate_graph(path)` — optional load check via ORT CPU EP at build time
+- `get_default_profile(name)` → `shape_profiles[0]`
+- `make_feed_from_profile(profile)` — deterministic `numpy` inputs (fixed seed)
+- `export_torch_module(...)` — shared export wrapper
+- `build_dispatch_baseline_graph(path)` — minimal **non-elidable** graph for harness `--mode dispatch` (see §3.3); lives here or in harness, exported once to `onnx_graphs/dispatch_baseline.onnx`
+
+### 2.5 Future multi-shape sweep (not v1 — structural readiness only)
+
+```python
+# Later: run_sweep.bat or a Python driver loops:
+for shape_idx in range(len(shape_profiles)):
+    harness.py --operator attn_score_matmul --shape-index shape_idx ...
+```
+
+No code-path duplication — only an extra loop variable.
 
 ---
 
@@ -140,90 +175,75 @@ Shapes anchored to five-model discussion in `PROJECT_CONTEXT.md` (ViT-B/16: N=19
 |---|---|---|
 | `--operator` | required* | Registry key |
 | `--engine` | required | `cpu` or `igpu` |
-| `--duration` | `30` | Steady-state window seconds (spec §5) |
-| `--warmup` | `5` | Discarded warm-up seconds (spec §4) |
-| `--repeats` | `5` | Repeat count (see §3.6 for orchestrator interaction) |
-| `--device-id` | `0` | DML `device_id` (890M = 0) |
+| `--duration` | `30` | Steady-state window seconds |
+| `--warmup` | `5` | Discarded warm-up seconds |
+| `--repeats` | `5` | Repeat count |
+| `--device-id` | `0` | DML `device_id` |
 | `--mode` | `measure` | `measure` \| `idle` \| `dispatch` |
+| `--shape-index` | `0` | Select `shape_profiles[shape_index]` |
 | `--outfile` | `results/runs.csv` | Append target |
 
-\*For `--mode idle` / `dispatch`, `--operator` may be ignored or set to a pseudo-name.
+\*For `--mode idle` / `dispatch`, `--operator` may be ignored.
 
-**Logged constants every run:**
-- `INTRA_OP_NUM_THREADS` — fixed integer, documented constant across all runs
-- `OPSET = 20`
+### 3.2 Fixed session constants (logged every run + metadata header)
 
-### 3.2 Session construction (engine branch)
+| Constant | Value | Where logged |
+|---|---|---|
+| `INTRA_OP_NUM_THREADS` | **`12`** (fixed) | stdout, `notes`, CSV column, `results/metadata.json` |
+| `GRAPH_OPTIMIZATION_LEVEL` | **`ORT_ENABLE_ALL`** | stdout, `notes`, CSV column, `results/metadata.json` |
+| `IGPU_VGM_MB` | **placeholder** — user records BIOS VGM allocation (e.g. `512`) | CSV column, `results/metadata.json`; workflow doc explains how to read/set |
+| `OPSET` | `20` | CSV column |
 
-**CPU:**
+**Metadata file (`results/metadata.json`):** written once per session (first harness invocation). Captures ORT version, uProf version (manual field), GPU driver version (manual/query), `INTRA_OP_NUM_THREADS`, `GRAPH_OPTIMIZATION_LEVEL`, `IGPU_VGM_MB`, opset, conda env name. Serves as the results header referenced in spec §8.
+
+### 3.3 Session construction (engine branch)
+
+**Shared (all modes that use ORT):**
 ```python
 so = ort.SessionOptions()
-so.intra_op_num_threads = INTRA_OP_NUM_THREADS  # fixed, logged
+so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL  # logged
+so.intra_op_num_threads = INTRA_OP_NUM_THREADS  # = 12, logged
+```
+
+**CPU (`--engine cpu`):**
+```python
 providers = ["CPUExecutionProvider"]
 ```
 
-**iGPU (mandatory — spec §3):**
+**iGPU (`--engine igpu`) — mandatory DML options:**
 ```python
-so = ort.SessionOptions()
-so.enable_mem_pattern = False                       # required by DML EP
-so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL  # required by DML EP
+so.enable_mem_pattern = False
+so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 providers = [("DmlExecutionProvider", {"device_id": device_id})]
 ```
 
-**EP placement verification (first run per invocation):**
-- `so.enable_profiling = True` on repeat_idx 0
-- After first steady-state inference, read profiling JSON
-- Check compute node landed on intended EP (not silent CPU fallback)
-- CPU fallback → recorded in `notes` column
+**EP placement verification (repeat_idx 0 only):**
+- `so.enable_profiling = True`
+- Parse profiling JSON after first steady-state inference
+- Confirm compute node on intended EP; CPU fallback → `notes`
 
-### 3.3 Mode routing (same loop function for all modes)
+### 3.4 Mode routing (same loop function for all modes)
 
 | `--mode` | Behavior |
 |---|---|
-| `measure` | Load registry operator graph; `sess.run()` each iteration |
+| `measure` | Load registry operator graph for `--shape-index`; `sess.run()` each iteration |
 | `idle` | No ORT session; `time.sleep()` for warmup + window (identical markers/timing) |
-| `dispatch` | Minimal `Identity` ONNX graph; same `sess.run()` loop — dispatch floor baseline (spec §6) |
+| `dispatch` | Load **non-elidable dispatch baseline graph** (NOT `Identity`) — see below |
 
-### 3.4 Measurement loop (single function — no copies)
+**Dispatch baseline (revised — § adjustment #3):**
 
-```
-for repeat_idx in range(repeats):
-    run_id = f"{operator}_{engine}_r{repeat_idx}_{timestamp}"
+`ORT_ENABLE_ALL` eliminates a bare `Identity` node during graph optimization, making the dispatch baseline measure nothing. Instead, `--mode dispatch` runs a minimal graph that survives optimization:
 
-    # --- WARMUP (discarded) ---
-    warmup_deadline = perf_counter() + warmup_s
-    while perf_counter() < warmup_deadline:
-        execute_one()   # sess.run() or sleep chunk
+- **Planned op:** single element-wise `Add` on a tiny static tensor (e.g. `[1]` or `[1,1]`), OR a one-element `Relu`/`Gelu`
+- **Requirement:** one non-fusable, non-elidable ORT node that still exercises session `run()` dispatch/launch overhead
+- Exported to `onnx_graphs/dispatch_baseline.onnx` for Netron verification that the node survives `ORT_ENABLE_ALL`
+- Operator CSV field: `operator=dispatch_baseline`, `cluster=` (empty or `baseline`)
 
-    # --- OPEN WINDOW ---
-    t_start = time.time()          # epoch — uProf alignment
-    pc_start = perf_counter()
-    print/log: "[WINDOW_OPEN] run_id=... t_start=... engine=... mode=..."
-
-    iterations = 0
-    pc_deadline = perf_counter() + duration_s
-    while perf_counter() < pc_deadline:
-        execute_one()
-        iterations += 1
-
-    # --- CLOSE WINDOW ---
-    t_end = time.time()
-    wall_time_s = perf_counter() - pc_start
-    mean_latency_ms = (wall_time_s / iterations) * 1000
-    print/log: "[WINDOW_CLOSE] run_id=... t_end=... iterations=..."
-
-    append_csv_row(schema §9)
-    sleep(3-5 s)   # cooldown between repeats
-```
-
-**Duration-based only** — never a fixed iteration count. Iteration count is an *output*.
-
-### 3.5 CSV schema (spec §9)
-
-Harness appends one row per repeat:
+### 3.5 CSV schema (extended from spec §9)
 
 ```
-run_id, operator, cluster, engine, device_id, input_shape, dtype, opset,
+run_id, operator, cluster, engine, device_id, shape_index, input_shape, dtype, opset,
+intra_op_num_threads, graph_optimization_level, igpu_vgm_mb,
 repeat_idx, warmup_s, window_s, iterations_completed, wall_time_s, mean_latency_ms,
 idle_power_w, active_power_w, window_energy_J, idle_energy_J,
 energy_per_op_J, dispatch_energy_J, notes
@@ -231,27 +251,27 @@ energy_per_op_J, dispatch_energy_J, notes
 
 | Filled by harness now | Left empty/NaN for post-uProf analysis |
 |---|---|
-| `run_id`, `operator`, `cluster`, `engine`, `device_id`, `input_shape`, `dtype`, `opset`, `repeat_idx`, `warmup_s`, `window_s`, `iterations_completed`, `wall_time_s`, `mean_latency_ms`, `notes` | `idle_power_w`, `active_power_w`, `window_energy_J`, `idle_energy_J`, `energy_per_op_J`, `dispatch_energy_J` |
+| All identity/run-timing fields incl. `shape_index`, `intra_op_num_threads`, `graph_optimization_level`, `igpu_vgm_mb` (from constant/placeholder), `notes` | Energy/power columns |
 
-First write creates CSV with header if missing.
+`igpu_vgm_mb`: read from harness constant `IGPU_VGM_MB` (set at top of `harness.py` or env var `BENCHMARK_IGPU_VGM_MB`); workflow doc instructs user to set this to match BIOS before a session.
 
-### 3.6 Orchestrator interaction
+### 3.6 Measurement loop (unchanged structure)
 
-`run_sweep.bat` owns the outer repeat loop and passes `--repeats 1` per uProf bracket so each repeat gets its own energy trace and `run_id`.
+Single function — warmup (discarded) → `WINDOW_OPEN` (`time.time()` epoch + `perf_counter`) → duration-based iteration loop → `WINDOW_CLOSE` → CSV append → cooldown.
 
-Harness still supports `--repeats 5` for manual single-op debugging without uProf.
+### 3.7 Orchestrator interaction
 
-### 3.7 What harness explicitly does NOT do
+`run_sweep.bat` passes `--repeats 1` per uProf-wrapped invocation. Harness supports `--repeats 5` for manual debugging without uProf.
 
-- Start/stop uProf
+### 3.8 What harness explicitly does NOT do
+
 - Compute Joules from watt samples
 - Duplicate loops per operator or engine
+- Launch uProf (parent is `run_sweep.bat` / `AMDuProfCLI`)
 
 ---
 
 ## 4. `run_sweep.bat` — Windows CMD orchestrator
-
-> **Critical change from original spec:** orchestrator is a **Batch script**, not PowerShell. Conda activation at the top before any Python commands.
 
 ### 4.1 Top of file — conda activation
 
@@ -259,7 +279,6 @@ Harness still supports `--repeats 5` for manual single-op debugging without uPro
 @echo off
 setlocal EnableDelayedExpansion
 
-REM === EDIT THIS to match your environment name ===
 call conda activate ryzen-ai-1.6.0
 if errorlevel 1 (
     echo [FAIL] Could not activate conda environment.
@@ -277,87 +296,85 @@ set WARMUP=5
 set REPEATS=5
 set OUTFILE=results\runs.csv
 set UPROF_CLI=AMDuProfCLI.exe
+set IGPU_VGM_MB=512          REM EDIT: match BIOS Variable Graphics Memory setting
 ```
 
-Operator list: hardcoded 16 registry keys, or generated via `python -c "from operators import ..."`.
+### 4.3 uProf parent-wrap pattern (revised — § adjustment #5)
 
-Engine list: `cpu igpu`.
+**Do NOT** start uProf as a background/async process with separate START/STOP in CMD.
 
-### 4.3 Per-(operator × engine × repeat) sequence
+Instead, **`AMDuProfCLI` launches `python harness.py` as its child process.** uProf collection lifetime is bound to the harness process lifetime — clean process tree, no orphan collectors.
+
+**Structural template (flags are TODO — verify on tower):**
+
+```bat
+REM ============================================================
+REM TODO: UPROF FLAGS — DO NOT GUESS
+REM Run on tower: AMDuProfCLI.exe timechart --help
+REM Confirm syntax for: wrapping a child command, output path, metrics.
+REM ============================================================
+
+%UPROF_CLI% timechart ^
+  REM ... verified flags ... ^
+  --output results\upprof\!RUN_ID!.csv ^
+  -- python harness.py ^
+    --operator !OPERATOR! ^
+    --engine !ENGINE! ^
+    --duration %DURATION% ^
+    --warmup %WARMUP% ^
+    --repeats 1 ^
+    --device-id 0 ^
+    --mode measure ^
+    --shape-index 0 ^
+    --outfile %OUTFILE%
+```
+
+The `-- python harness.py ...` tail is the **child-process pattern** — exact uProf flag name for child launch (`--`, `/command`, etc.) to be filled from `AMDuProfCLI.exe --help`.
+
+### 4.4 Per-(operator × engine × repeat) loop
 
 ```
 FOR each operator in OPERATORS:
   FOR each engine in ENGINES:
     FOR repeat_idx = 0 .. REPEATS-1:
-
-      set RUN_ID=%operator%_%engine%_r%repeat_idx%_%timestamp%
-
-      REM === TODO: uProf START — verify flags against installed uProf 5.x ===
-      REM AMDuProfCLI.exe timechart ... --duration (warmup+duration+margin) ...
-      REM Output: results\upprof\%RUN_ID%.csv
-
-      python harness.py ^
-        --operator %operator% ^
-        --engine %engine% ^
-        --duration %DURATION% ^
-        --warmup %WARMUP% ^
-        --repeats 1 ^
-        --device-id 0 ^
-        --mode measure ^
-        --outfile %OUTFILE%
-
-      REM === TODO: uProf STOP / finalize collection ===
-
-      timeout /t 5 /nobreak
+      set RUN_ID=!OPERATOR!_!ENGINE!_r!repeat_idx!_!timestamp!
+      REM single uProf-wrapped harness invocation (no separate START/STOP)
+      timeout /t 5 /nobreak   REM cooldown between repeats
 ```
 
-### 4.4 Baseline sweeps (commented templates — not auto-run in full sweep)
+### 4.5 Baseline invocations (commented templates)
 
-**Idle baseline** (once per engine per session):
-```bat
-python harness.py --mode idle --engine cpu --duration 30 --warmup 5 --repeats 1 --outfile results\runs.csv
-```
-
-**Dispatch baseline** (once per engine per session):
-```bat
-python harness.py --mode dispatch --engine igpu --duration 30 --warmup 5 --repeats 1 --outfile results\runs.csv
-```
-
-Energy subtraction happens in analysis, not inside the sweep loop.
-
-### 4.5 uProf TODO block (no guessed flags)
+Each baseline also uses the uProf parent-wrap pattern when run under uProf:
 
 ```bat
-REM ============================================================
-REM TODO: UPROF FLAGS — DO NOT GUESS
-REM On the HX 370 tower, run:
-REM   AMDuProfCLI.exe timechart --help
-REM   AMDuProfCLI.exe power --help
-REM Verify: collection duration brackets (warmup + window + margin),
-REM          output CSV path, package/SoC power metric, sampling interval.
-REM Replace the START/STOP stubs below with verified 5.x syntax.
-REM ============================================================
+REM Idle baseline (per engine, per session):
+%UPROF_CLI% timechart ... -- python harness.py --mode idle --engine cpu ...
+
+REM Dispatch baseline (per engine, per session):
+%UPROF_CLI% timechart ... -- python harness.py --mode dispatch --engine igpu ...
 ```
 
 ---
 
 ## 5. `BENCHMARK_WORKFLOW.md` — user-facing CMD guide
 
-Operational guide (no implementation code). Sections:
+Sections (operational, no implementation code):
 
-1. **Prerequisites** — conda env, `onnxruntime-directml`, uProf on PATH, AC power, pinned Windows power plan
-2. **One-time graph export** — `cd benchmark && python operators.py` → inspect `onnx_graphs/*.onnx` in Netron
-3. **Smoke test (no uProf)** — single operator, both engines
-4. **Baselines** — when/how to run `idle` and `dispatch` per engine
-5. **Full sweep** — `run_sweep.bat` from standalone CMD (close IDE/background apps first — spec §8)
-6. **Per-operator manual runs** — CMD examples for CPU vs iGPU
-7. **NPU later** — add `--engine npu` + Vitis EP; same harness, new provider branch
-8. **Results** — CSV location, `t_start`/`t_end` alignment to uProf, post-hoc energy columns
-9. **Troubleshooting** — DML errors, EP fallback in `notes`, conda activation failures
+1. Prerequisites (conda, `onnxruntime-directml`, uProf, AC power, pinned power plan)
+2. **BIOS VGM setup** — record Variable Graphics Memory allocation; set `IGPU_VGM_MB` / env var to match
+3. One-time graph export (`python operators.py`) → Netron inspect `onnx_graphs/`
+4. Verify dispatch baseline survives optimization (Netron: `dispatch_baseline.onnx` has visible Add/Relu node)
+5. Smoke test without uProf
+6. Baselines (`idle`, `dispatch`) per engine
+7. Full sweep via `run_sweep.bat` from standalone CMD
+8. Per-operator manual CMD examples (CPU vs iGPU, `--shape-index`)
+9. NPU later (`--engine npu`)
+10. Results alignment (`t_start`/`t_end` ↔ uProf), metadata.json, extended CSV columns
+11. Troubleshooting (DML options, EP fallback, conda, uProf child-wrap syntax)
 
 ---
 
-## 6. End-to-end data flow
+## 6. End-to-end data flow (revised uProf parent pattern)
 
 ```mermaid
 sequenceDiagram
@@ -368,22 +385,23 @@ sequenceDiagram
     participant CSV as results/runs.csv
 
     BAT->>BAT: conda activate
-    BAT->>UP: START collection (TODO flags)
-    BAT->>H: python harness.py (1 repeat)
+    BAT->>UP: launch with harness as child
+    UP->>H: spawn python harness.py
     H->>H: warmup (discarded)
-    H->>H: print WINDOW_OPEN t_start
+    H->>H: WINDOW_OPEN t_start
     loop until duration elapsed
         H->>ORT: sess.run() or sleep
     end
-    H->>H: print WINDOW_CLOSE t_end iterations
-    H->>CSV: append row (energy cols NaN)
-    BAT->>UP: STOP collection
+    H->>H: WINDOW_CLOSE t_end iterations
+    H->>CSV: append row
+    H-->>UP: process exit
+    UP-->>BAT: collection complete
     Note over UP,CSV: Post-run: align uProf trace to t_start/t_end
 ```
 
 ---
 
-## 7. Locked defaults (spec-aligned)
+## 7. Locked defaults
 
 | Parameter | Value |
 |---|---|
@@ -394,44 +412,69 @@ sequenceDiagram
 | dtype | float32 |
 | iGPU device_id | 0 |
 | Engines (this phase) | `cpu`, `igpu` |
-| ORT package | `onnxruntime-directml` (single env for CPU + iGPU) |
+| MHA batching | B=1, H=12 heads on attention matmuls + softmax |
+| `INTRA_OP_NUM_THREADS` | **12** (fixed) |
+| `GRAPH_OPTIMIZATION_LEVEL` | **ORT_ENABLE_ALL** |
+| Shape selection (v1) | `shape_profiles[0]` via `--shape-index 0` |
+| ORT package | `onnxruntime-directml` |
 
 ---
 
-## 8. Experimental controls (spec §8 — workflow doc will checklist)
+## 8. Experimental controls
 
 - Tower on AC; single pinned Windows power plan
-- Close background apps; measured runs from clean standalone CMD (not Cursor terminal)
+- Close background apps; measured runs from clean standalone CMD
 - Same ORT build for CPU and iGPU
-- Fixed `intra_op_num_threads`, logged
+- **`INTRA_OP_NUM_THREADS = 12` logged on every row**
+- **`ORT_ENABLE_ALL` logged on every row**
+- **VGM BIOS allocation recorded in metadata + CSV (`igpu_vgm_mb`)**
 - Warm-up discarded every run
-- Cooldown between repeats; flag throttled windows in `notes`
-- Consider interleaving run order (op A cpu, op A igpu, op B cpu …)
+- Cooldown between repeats; flag throttling in `notes`
+- Interleave run order recommended (op A cpu, op A igpu, …)
 
 ---
 
-## 9. Open decisions (confirm before coding)
+## 9. Open decisions (remaining)
 
-| # | Question | Proposed default |
+| # | Question | Status |
 |---|---|---|
-| 1 | Conda env name in `run_sweep.bat` | `ryzen-ai-1.6.0` |
-| 2 | Characteristic shapes (§2.3 table) | As listed — any changes? |
-| 3 | B2 enrichment (`shift`, `token_mixing_mlp`) | Excluded from v1 |
-| 4 | `INTRA_OP_NUM_THREADS` | Pin to physical core count (logged) — or specify a number? |
-| 5 | Repeat ownership | Outer loop in `.bat` with `--repeats 1` per uProf bracket |
+| 1 | Conda env name | `ryzen-ai-1.6.0` — confirm |
+| 2 | B2 enrichment (`shift`, `token_mixing_mlp`) | Excluded v1 |
+| 3 | Dispatch baseline op choice | Single element-wise `Add` on `[1]` (preferred) — confirm or prefer `Relu` |
+| 4 | `IGPU_VGM_MB` default in scripts | Placeholder `512` — user edits to match BIOS |
+| 5 | uProf child-launch flag syntax | TODO on tower (`--help`) |
 | 6 | Workflow doc path | `benchmark/BENCHMARK_WORKFLOW.md` |
+
+**Resolved by adjustments:**
+- ~~`INTRA_OP_NUM_THREADS`~~ → **12**
+- ~~Single hardcoded shapes~~ → **list of `shape_profiles`, default index 0**
+- ~~Identity dispatch baseline~~ → **non-elidable minimal op**
+- ~~Async uProf START/STOP~~ → **parent-wrap child pattern**
 
 ---
 
 ## 10. Implementation order (after confirmation)
 
-1. Create `benchmark/` directory structure
-2. Implement `operators.py` + export all 16 graphs to `onnx_graphs/`
-3. Implement `harness.py` (single loop, all modes, CSV append)
-4. Implement `run_sweep.bat` (conda activate, nested loops, uProf TODO stubs)
-5. Write `BENCHMARK_WORKFLOW.md`
-6. Update `measurement_harness_spec.md` (ps1 → bat, any default changes)
+1. Create `benchmark/` directory structure + `results/upprof/`
+2. Implement `operators.py` (multi-shape registry, batched MHA matmuls, `num_groups=1` GroupNorm) + export graphs
+3. Implement `harness.py` (ORT_ENABLE_ALL, threads=12, dispatch baseline, extended CSV, metadata.json)
+4. Implement `run_sweep.bat` (conda, uProf parent-wrap, nested loops)
+5. Write `BENCHMARK_WORKFLOW.md` (VGM + CMD workflow)
+6. Update `directives/measurement_harness_spec.md` to reflect all six adjustments
 
 ---
 
-*Generated 2026-06-05. Review with other LLMs, then reply **confirm** (with any edits) to begin implementation.*
+## 11. Changelog — six incorporated adjustments
+
+| # | Adjustment | Where reflected |
+|---|---|---|
+| 1 | **Batched MHA matmuls** (B=1, H=12) | §2.3 `attn_score_matmul`, `attn_value_matmul`, `xcit_cov_matmul`; softmax aligned to `[12,197,197]` |
+| 2 | **Parameterized registry shapes** (list per operator, default `[0]`) | §2.1 schema, `--shape-index` flag, §2.5 future sweep |
+| 3 | **`ORT_ENABLE_ALL` logged**; **non-elidable dispatch baseline** (not Identity) | §3.2, §3.4, §2.4 `build_dispatch_baseline_graph` |
+| 4 | **PoolFormer `group_norm`: `num_groups=1`** | §2.3 Cluster A table |
+| 5 | **uProf parent-wrap** (`AMDuProfCLI` launches harness as child) | §4.3, §6 diagram; removed async START/STOP |
+| 6 | **VGM + thread metadata** in CSV and session header | §3.2, §3.5 (`igpu_vgm_mb`, `intra_op_num_threads`, `graph_optimization_level`, `metadata.json`) |
+
+---
+
+*Revision 2026-06-05. Reply **confirm** (with any edits to §9) to begin implementation. No code files until confirmed.*
