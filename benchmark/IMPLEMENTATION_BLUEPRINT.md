@@ -1,6 +1,6 @@
 # Implementation Blueprint — Operator Energy Benchmarking Harness
 
-**Status:** PLAN ONLY — awaiting final human confirmation before any code is written.
+**Status:** IMPLEMENTED — see `operators.py`, `harness.py`, `run_sweep.bat`, `BENCHMARK_WORKFLOW.md`.
 
 **Revision:** 2026-06-05 (incorporates six reviewer adjustments — see §11)
 
