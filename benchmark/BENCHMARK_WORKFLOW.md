@@ -38,14 +38,31 @@ energy_per_op = (window_energy - dispatch_energy) / iterations
 
 Harness prints `t_start` / `t_end` as `time.time()` epoch seconds for alignment.
 
-### uProf clock base (TODO — verify on tower)
+### uProf ↔ harness timestamp alignment (confirmed — conversion required)
 
-Before your first real session, inspect a uProf CSV and determine whether timestamps are:
+**Smoke test finding:** uProf is **not** elapsed-since-start. `timechart.csv` uses **wall-clock
+time-of-day** (`HH:MM:SS:ms`, local tz). Harness uses **Unix epoch seconds** (`time.time()`).
+Units differ — **do not** label this "ABSOLUTE" and align directly.
 
-1. **Absolute system time** — align directly to harness `t_start` / `t_end`, or
-2. **Elapsed since collection start** — record the collection start wall-clock epoch immediately before/after `AMDuProfCLI` launches, then add that offset to uProf timestamps before matching Python markers.
+```
+uProf = wall-clock time-of-day (HH:MM:SS:ms, local tz)
+harness WINDOW_OPEN/CLOSE = Unix epoch seconds
+→ conversion required; confirm timezone (Europe/Athens, EEST UTC+3 in summer)
+```
 
-Document your finding in `results/metadata.json` (`upref_version` / notes).
+**Preferred conversion direction:** parse uProf `HH:MM:SS:ms` + session date + local tz → epoch;
+do all window math in epoch seconds. Avoid epoch→time-of-day as primary (no date on uProf strings;
+midnight/DST breaks).
+
+**Robust anchor (TODO — implement in `run_sweep.bat` + parser):** log uProf `Profile Start Time`
+and/or wall-clock epoch at `AMDuProfCLI` launch so both traces share **one reference** instead
+of hoping two independent clocks agree to the millisecond.
+
+**TODO — alignment parser (draft tomorrow):** build a function in the log-parsing step that maps
+harness `time.time()` markers to uProf local `HH:MM:SS:ms` rows in `timechart.csv`, accounting
+for Europe/Athens offset, to slice telemetry to exact execution windows.
+
+Document config in `benchmark/results/metadata.json` (`uprof_timestamp_base`, `todo_alignment_parser`).
 
 ---
 

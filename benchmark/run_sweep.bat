@@ -30,13 +30,13 @@ set BENCHMARK_IGPU_VGM_MB=%IGPU_VGM_MB%
 
 REM --- ONE locale-safe session timestamp (never use %%date%%%%time%% in filenames) ---
 for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set SESSION_TS=%%T
-set UPROF_SESSION_DIR=results\upprof\%SESSION_TS%
+set UPROF_SESSION_DIR=results\uprof\%SESSION_TS%
 
 echo [SESSION] timestamp=%SESSION_TS%
 echo [SESSION] uProf output dir=%UPROF_SESSION_DIR%
 
 if not exist results mkdir results
-if not exist results\upprof mkdir results\upprof
+if not exist results\uprof mkdir results\uprof
 if not exist "%UPROF_SESSION_DIR%" mkdir "%UPROF_SESSION_DIR%"
 if errorlevel 1 (
     echo [FAIL] Could not create uProf session directory: %UPROF_SESSION_DIR%
@@ -51,11 +51,14 @@ REM   AMDuProfCLI.exe --help
 REM Verify child-launch syntax (standard trailing args: ... -- python harness.py ...)
 REM and fill in the timechart flags below.
 REM ============================================================================
-REM TODO: UPROF CLOCK BASE — verify timestamp base of uProf CSV output.
-REM   If timestamps are absolute system time: align directly to harness t_start/t_end.
-REM   If elapsed-since-collection-start: record collection start wall-clock epoch
-REM   (e.g. immediately before AMDuProfCLI returns) and add offset to uProf times
-REM   before matching Python time.time() WINDOW_OPEN/WINDOW_CLOSE markers.
+REM TIMESTAMP ALIGNMENT (confirmed — conversion required; do NOT align directly):
+REM   uProf timechart.csv = wall-clock HH:MM:SS:ms (local tz)
+REM   harness WINDOW_OPEN/CLOSE = Unix epoch seconds (time.time())
+REM   Preferred: parse uProf string + session date + Europe/Athens tz -> epoch; math in epoch.
+REM   Avoid epoch->time-of-day primary (no date on uProf strings; midnight/DST risk).
+REM TODO (parser): build alignment function for log-parsing step (see metadata.json todo_alignment_parser).
+REM TODO (robust anchor): before each uProf wrap, log Profile Start Time / epoch at launch
+REM   (e.g. echo epoch to session log) so uProf and harness traces share one reference.
 REM ============================================================================
 
 set OPERATORS=patch_embed_conv2d downsample_conv2d ffn_gemm gelu layer_norm group_norm batch_norm residual_add qkv_proj_gemm attn_score_matmul xcit_cov_matmul softmax attn_value_matmul sra_conv2d avg_pool_token_mixer depthwise_conv2d
@@ -75,8 +78,8 @@ for %%O in (%OPERATORS%) do (
             echo [RUN] !RUN_ID! session=%SESSION_TS%
 
             REM uProf parent-wrap: harness runs as child of AMDuProfCLI.
-            REM TODO: insert verified timechart flags (from AMDuProfCLI timechart --help) before --output.
-            %UPROF_CLI% timechart --output "%UPROF_SESSION_DIR%\!RUN_ID!.csv" -- python harness.py --operator %%O --engine %%E --duration %DURATION% --warmup %WARMUP% --repeats 1 --device-id %DEVICE_ID% --mode measure --shape-index 0 --run-id !RUN_ID! --outfile %OUTFILE%
+            REM TODO: insert verified timechart flags (from AMDuProfCLI timechart --help) before --output. Should be resolved now
+            %UPROF_CLI% timechart --event power --interval 100 --output "%UPROF_SESSION_DIR%\!RUN_ID!.csv" "C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\python.exe" harness.py --operator %%O --engine %%E --duration %DURATION% --warmup %WARMUP% --repeats 1 --device-id %DEVICE_ID% --mode measure --shape-index 0 --run-id !RUN_ID! --outfile %OUTFILE%
 
             if errorlevel 1 (
                 echo [WARN] run !RUN_ID! returned non-zero exit code

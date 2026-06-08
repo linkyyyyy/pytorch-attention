@@ -130,9 +130,13 @@ Subtract dispatch energy in the headline formula. Idle baseline for static floor
 uProf runs as parent process; `python harness.py` runs as **child** (`AMDuProfCLI ... -- python harness.py ...`).
 
 - Verify flags against installed 5.x help (`AMDuProfCLI.exe timechart --help`).
-- **TODO:** verify uProf CSV timestamp base (absolute system time vs elapsed-since-start).
-  If elapsed, record collection start wall-clock epoch for offset against Python markers.
-- Align harness `t_start`/`t_end` to uProf timeline; integrate power or read cumulative energy counter.
+- **Timestamp alignment (confirmed):** uProf `timechart.csv` = wall-clock `HH:MM:SS:ms` (local tz);
+  harness markers = Unix epoch seconds. **Conversion required** — not the same unit. Prefer parsing
+  uProf strings + session date + timezone (Europe/Athens) → epoch; avoid epoch→time-of-day primary.
+- **Robust anchor:** log uProf `Profile Start Time` / launch epoch in `run_sweep.bat` so both traces
+  share one reference (do not rely on independent clock matching).
+- **TODO:** alignment parser — map `WINDOW_OPEN`/`WINDOW_CLOSE` epoch to uProf CSV rows for slicing.
+- Integrate power (∫P dt) over aligned window, or read cumulative energy counter difference.
 - Output per run to `results/upprof/<SESSION_TS>/<operator>_<engine>_r<N>.csv`.
 - Session timestamp: ONE locale-safe value at sweep start (PowerShell `Get-Date -Format`); never `%date%%time%` in filenames.
 

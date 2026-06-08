@@ -48,6 +48,34 @@ a single narrow finding like "the NPU likes matmuls."
 
 The AMD Ryzen AI Software SDK is **Windows-based**.
 
+### Measurement Scope Notes
+
+**Confirmed on tower (2026-06-08):** `AMDuProfCLI timechart --list` exposes Power counters
+only at **[Socket, Core]** granularity (`socket0-package-power`, `coreN-power`). No per-rail
+iGPU or NPU power counters exist on this platform.
+
+**Timestamp alignment (units differ — conversion required):** uProf `timechart.csv` uses
+**wall-clock time-of-day** (`HH:MM:SS:ms`, local tz). Harness `WINDOW_OPEN`/`WINDOW_CLOSE` uses
+**Unix epoch seconds** (`time.time()`). These are not the same unit; do not assume direct match.
+
+- **Preferred conversion:** parse uProf `HH:MM:SS:ms` + known session date + **Europe/Athens**
+  offset → epoch; slice CSV in epoch space. Avoid epoch→time-of-day as the primary path (no date
+  on uProf strings; midnight/DST ambiguity).
+- **Window bounds in `runs.csv`:** `t_start_epoch` / `t_end_epoch` from harness `time.time()` at
+  `WINDOW_OPEN`/`WINDOW_CLOSE` — primary join key for `parse_energy.py`.
+- **Robust anchor (TODO):** capture uProf `Profile Start Time` and/or log epoch at `AMDuProfCLI`
+  launch in `run_sweep.bat` so both traces share one reference instead of matching independent clocks.
+- Reference smoke captures: `benchmark/uprof_smoke/`.
+
+**Individual iGPU or NPU rail isolation is unavailable** on the HX 370: CPU, Radeon 890M iGPU,
+and XDNA NPU share the same die and power delivery. All energy figures are **package-level power
+during engine execution**, isolated via baseline subtraction (idle + dispatch), not a dedicated
+engine rail.
+
+Per-engine comparison relies on **controlled execution** (one ORT execution provider per run) and
+**baseline subtraction**, not separate hardware power rails. State this explicitly in the paper
+methodology.
+
 ---
 
 ## 4. OPERATORS / WORKLOADS IN SCOPE
@@ -255,7 +283,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   - GEMM plumbing test PASSED on CPU EP. Full pipeline validated end-to-end
     (PyTorch 2.7.1+cpu -> ONNX opset 17 -> ORT 1.23.0.dev -> inference -> timing).
     Numerical check MATCH (max abs diff 1.43e-6). All three EPs visible in the
-    ryzen-ai env (Vitis AI, DirectML, CPU). Model-selection scope confirmed:
+    `ryzen-ai-1.6.0` env (Vitis AI, DirectML, CPU). Model-selection scope confirmed:
     3-4 from EACH list, 6-8 total.
   - Full model survey completed (all 15 attention modules + 18 ViTs read and
     analyzed). Proposed shortlist drafted — **pending three decisions for Chris**
@@ -353,13 +381,68 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   | `benchmark/BENCHMARK_WORKFLOW.md` | User-facing CMD workflow guide (prerequisites, export, smoke test, baselines, sweep, troubleshooting) |
   | `benchmark/IMPLEMENTATION_BLUEPRINT.md` | Design spec: registry schema, harness CLI, dispatch baseline rationale, CSV schema, uProf parent-wrap pattern, locked defaults |
   | `benchmark/onnx_graphs/` | 16 pre-exported `.onnx` operator graphs (+ `dispatch_baseline.onnx`) for Netron inspection and ORT sessions |
-  | `benchmark/results/` | Empty placeholder — `runs.csv` and `upprof/<SESSION_TS>/` populate during measurement |
+  | `benchmark/parse_energy.py` | Post-process uProf timechart CSVs + `runs.csv` → per-operator energy (J/op); `--test-toy` + `--plot` |
+  | `benchmark/results/` | Empty placeholder — `runs.csv` and `uprof/<SESSION_TS>/` populate during measurement |
   | `directives/measurement_harness_spec.md` | Protocol spec: measurement philosophy, session options, loop structure, baselines, uProf integration, CSV schema, validity checklist |
   | `directives/operator_architecture_selection.md` | Architecture & operator selection rationale (Opus-generated; authoritative cluster definitions) |
 
-- **TODO next (Day 5 — on the HX 370 tower):**
-  1. **uProf child-launch flag syntax:** Run `AMDuProfCLI.exe timechart --help` on the tower and fill in the verified flags in `run_sweep.bat` (the `TODO: UPROF FLAGS` block in §4.3 of `IMPLEMENTATION_BLUEPRINT.md`). Confirm the exact flag for child-process launch (`--`, `/command`, or similar).
-  2. **uProf timestamp base:** Inspect a real uProf CSV output to determine whether timestamps are absolute system time or elapsed-since-collection-start. If elapsed, record the collection start wall-clock epoch immediately alongside `AMDuProfCLI` launch and document the offset approach in `results/metadata.json`. See `BENCHMARK_WORKFLOW.md` §2 and `measurement_harness_spec.md` §7.
-  3. **Confirm `ortvalue_from_numpy(arr, "dml", 0)` works on this ORT build:** The `onnxruntime-directml` build in `ryzen-ai-1.6.0` may or may not expose `OrtValue.ortvalue_from_numpy` with a DML device string. Run a quick smoke test; if unavailable, the harness feed dict (plain numpy) is the fallback and already implemented.
-  4. **`synchronize_outputs()` line:** DML is asynchronous — results may not be flushed when `sess.run()` returns. If latency measurements look suspiciously fast, add `sess.synchronize_outputs()` (or equivalent) inside the loop. If already confirmed unnecessary for the ORT build in use, cross this off.
-  5. **Run idle + dispatch baselines on both engines:** Execute the baseline CMD examples from `BENCHMARK_WORKFLOW.md` §5 under uProf (once uProf flags are confirmed from item 1). Capture `idle_cpu`, `idle_igpu`, `dispatch_cpu`, `dispatch_igpu` as the session's energy floor and overhead reference before running any operator sweeps.
+- **2026-06-08 (Day 5 — tower verification COMPLETE):** Full harness + uProf smoke test passed on HX 370 in `ryzen-ai-1.6.0`. Reference artifacts in `benchmark/uprof_smoke/`.
+
+  **Tower verification checklist — all confirmed:**
+  - [x] **Conda env:** `ryzen-ai-1.6.0`
+  - [x] **ORT:** `1.23.0.dev20250928`; providers: `CPUExecutionProvider`, `DmlExecutionProvider`, `VitisAIExecutionProvider`
+  - [x] **uProf:** `5.3.518.0`; child-launch via full interpreter path `C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\python.exe` (not PATH alias)
+  - [x] **uProf timestamp format:** wall-clock `HH:MM:SS:ms` (local tz), **not** epoch — conversion required to align with harness epoch markers (see §3)
+  - [x] **Power scope:** `timechart --list` — Power counters only at **[Socket, Core]**; no per-rail iGPU/NPU (see §3 Measurement Scope Notes)
+  - [x] **GPU driver (890M):** `32.0.21030.0`
+  - [x] **DML IOBinding:** `OrtValue.ortvalue_from_numpy(arr, "dml", 0)` OK (`dml_ortvalue_smoke_test.py` PASS)
+  - [x] **GPU sync:** `io_binding.synchronize_outputs()` after each `run_with_iobinding` — iGPU `ffn_gemm` = **0.716 ms/iter**, ~**6,982 iters/5 s** (physically sane; no async over-count)
+  - [x] **EP placement:** `EP_OK` on all four smoke runs
+
+  **Smoke-test reference latencies (`ffn_gemm`, shape `197×768@768×3072`, FP32, opset 20):**
+
+  | Run | Engine | Mean latency |
+  |---|---|---|
+  | `ffn_gemm` | CPU | **1.073 ms**/iter |
+  | `ffn_gemm` | iGPU | **0.716 ms**/iter |
+  | `dispatch_baseline` | iGPU | **0.076 ms**/iter |
+
+  Session constants recorded in `benchmark/results/metadata.json`. Harness code under `benchmark/` (`operators.py`, `harness.py`, `run_sweep.bat`, `parse_energy.py`, `onnx_graphs/`, `results/`).
+
+- **2026-06-08 (Week 2, Day 1 — close-out):** All tower-verification items cleared.
+
+  **Status (confirmed on HX 370):**
+  - `synchronize_outputs()` on iGPU IOBinding — `ffn_gemm` ~**0.72 ms/iter**, ~**13,560 iters/10 s**, no async over-count
+  - DML IOBinding probe passes; **EP_OK** on all smoke runs
+  - uProf launch confirmed: trailing positional target, absolute `python.exe` path (no `--`), `--event power --interval 100`
+
+  **uProf CSV schema (ground truth: `benchmark/uprof_toy/`):**
+  - Preamble → `PROFILE RECORDS` section; data header `RecordId,Timestamp,socket0-package-power,...`
+  - `Timestamp`: `HH:MM:SS:ms` (colon before ms, e.g. `16:36:25:532`)
+  - Power column: **`socket0-package-power`** (W) — integrate this; ignore `core0-power`..`core11-power`
+  - Session date from preamble `Profile Start Time:` (e.g. `Jun-08-2026_16-36-25`); local tz **Europe/Athens**
+
+  **`run_sweep.bat` fixes:** launch line uses `--event power --interval 100` + absolute `python.exe` path (no `--`); `upprof`→`uprof` session-dir typo corrected.
+
+  **Window bounds (design decision):** Option **(b)** — `harness.py` now writes `t_start_epoch` / `t_end_epoch` columns to `runs.csv` (alongside stdout `[WINDOW_OPEN]`/`[WINDOW_CLOSE]` markers). `parse_energy.py` reads these directly; falls back to per-run `.log` parsing if columns are absent (option (a) compatibility).
+
+  **`parse_energy.py`:** Deterministic post-processor — `parse_uprof_csv()`, trapezoidal `integrate_power()`, `energy_per_op()`; joins `runs.csv` to uProf CSVs by `run_id`; writes `results/runs_enriched.csv`. `--plot` saves per-run PNG with `t_start`/`t_end` vertical markers (requires `matplotlib`).
+
+  **Toy verification (`toy_igpu`, `AMDuProf-python-Timechart_Jun-08-2026_16-36-25/timechart.csv`):**
+  - Window: `t_start=1780925790.173200`, `t_end=1780925800.172677`, `iterations=13560`
+  - `window_energy_J` ≈ **457 J** (mean package power ~46 W × ~10 s); `energy_per_op_J` ≈ **3.37×10⁻² J/op** (dispatch baseline 0 for toy)
+
+  **GUI note:** `timechart` output is **CSV-only** (no `.uprof` DB; confirmed in `timechart --help`). `collect` is a CPU profiler, not the package-power path. CSV→`.uprof` conversion is impossible. GUI viewing of power data not pursued — visual verification via `parse_energy.py --plot` PNGs instead. uProf-GUI practice deferred to a future CPU/GPU-profiling exercise where `collect`/`gputrace` is the correct tool.
+
+- **Open — pending supervisor input (increasingly urgent):**
+  - **Precision policy (§4 decision #2):** INT8-all engines vs native-best (FP32 CPU / FP16 iGPU / INT8 NPU). Unresolved; affects all cross-engine energy comparisons.
+  - **PoolFormer vs PvT control pair** (architecture selection).
+
+- **TODO next (Week 2, Day 2):**
+  1. Validate `parse_energy.py` on toy capture on tower (re-run `--test-toy`; optional `--plot` with `matplotlib`)
+  2. Small real sweep — 2–3 operators × both engines — to prove full pipeline (harness → uProf CSV → enriched CSV)
+  3. Full 16-operator sweep (clean machine, editor closed)
+  4. Analysis: J/op, GFLOP/s-per-watt
+  5. Christoforos check-in
+  6. **Confirm BIOS VGM:** Set `IGPU_VGM_MB` in `benchmark/run_sweep.bat`; update metadata
+  7. **Run idle + dispatch baselines** under uProf (`idle_cpu`, `idle_igpu`, `dispatch_cpu`, `dispatch_igpu`)
