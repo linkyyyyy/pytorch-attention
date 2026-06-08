@@ -39,6 +39,9 @@ INTRA_OP_NUM_THREADS = 12
 GRAPH_OPTIMIZATION_LEVEL_NAME = "ORT_ENABLE_ALL"
 COOLDOWN_S = 5.0
 
+# None = not probed yet; set by probe_dml_ortvalue() on first iGPU session.
+_DML_ORTVALUE_AVAILABLE: bool | None = None
+
 CSV_HEADER = [
     "run_id",
     "operator",
@@ -175,20 +178,50 @@ def _check_ep_placement(sess: Any, engine: str) -> str:
     return "; ".join(notes)
 
 
+def probe_dml_ortvalue(device_id: int = 0) -> bool:
+    """
+    Return whether this ORT build accepts OrtValue.ortvalue_from_numpy(..., 'dml', device_id).
+    Result is cached for the process lifetime.
+    """
+    global _DML_ORTVALUE_AVAILABLE
+    if _DML_ORTVALUE_AVAILABLE is not None:
+        return _DML_ORTVALUE_AVAILABLE
+    try:
+        import onnxruntime as ort
+
+        probe = np.array([1.0], dtype=np.float32)
+        ort.OrtValue.ortvalue_from_numpy(probe, "dml", device_id)
+        _DML_ORTVALUE_AVAILABLE = True
+        print(f"[DML_IO] OrtValue device string 'dml' OK (device_id={device_id})")
+    except Exception as exc:
+        _DML_ORTVALUE_AVAILABLE = False
+        print(
+            f"[DML_IO] OrtValue 'dml' unavailable; falling back to sess.run(feeds): {exc}"
+        )
+    return _DML_ORTVALUE_AVAILABLE
+
+
+def igpu_use_iobinding(device_id: int) -> bool:
+    return probe_dml_ortvalue(device_id)
+
+
 def _create_io_binding(
     sess: Any,
     feeds: dict[str, np.ndarray],
     output_names: list[str],
     engine: str,
     device_id: int,
-) -> Any:
-    """Bind inputs/outputs once; reuse across iterations via run_with_iobinding."""
-    import onnxruntime as ort
+) -> Any | None:
+    """Bind inputs/outputs once for IOBinding path. Returns None if iGPU numpy-feed fallback."""
+    if engine == "igpu" and not igpu_use_iobinding(device_id):
+        return None
 
     io_binding = sess.io_binding()
     for name, arr in feeds.items():
         contiguous = np.ascontiguousarray(arr)
         if engine == "igpu":
+            import onnxruntime as ort
+
             ort_value = ort.OrtValue.ortvalue_from_numpy(contiguous, "dml", device_id)
             io_binding.bind_ortvalue_input(name, ort_value)
         else:
@@ -201,6 +234,23 @@ def _create_io_binding(
     return io_binding
 
 
+def _run_inference_iteration(
+    sess: Any,
+    *,
+    use_iobinding: bool,
+    io_binding: Any | None,
+    feeds: dict[str, np.ndarray] | None,
+    output_names: list[str] | None,
+) -> None:
+    if use_iobinding:
+        assert io_binding is not None
+        sess.run_with_iobinding(io_binding)
+        io_binding.synchronize_outputs()  # 1 iteration = 1 completed GPU execution
+    else:
+        assert feeds is not None and output_names is not None
+        sess.run(output_names, feeds)
+
+
 def _run_profile_check(
     onnx_path: Path,
     engine: str,
@@ -211,8 +261,15 @@ def _run_profile_check(
     """Single profiled iteration before warmup; profiling never enters the timed window."""
     sess_profile = _create_session(onnx_path, engine, device_id, enable_profiling=True)
     print(f"[PROFILE_SESSION] providers={sess_profile.get_providers()}")
+    use_iobinding = engine != "igpu" or igpu_use_iobinding(device_id)
     io_binding = _create_io_binding(sess_profile, feeds, output_names, engine, device_id)
-    sess_profile.run_with_iobinding(io_binding)
+    _run_inference_iteration(
+        sess_profile,
+        use_iobinding=use_iobinding,
+        io_binding=io_binding,
+        feeds=feeds,
+        output_names=output_names,
+    )
     return _check_ep_placement(sess_profile, engine)
 
 
@@ -257,6 +314,9 @@ def _run_repeat(
     outfile: Path,
     sess: Any | None,
     io_binding: Any | None,
+    feeds: dict[str, np.ndarray] | None,
+    output_names: list[str] | None,
+    use_iobinding: bool,
     ep_note: str,
     csv_opset: int | str,
 ) -> None:
@@ -264,9 +324,14 @@ def _run_repeat(
         if mode == "idle":
             time.sleep(0.001)
         else:
-            assert sess is not None and io_binding is not None
-            sess.run_with_iobinding(io_binding)
-            io_binding.synchronize_outputs()  # 1 iteration = 1 completed GPU execution
+            assert sess is not None
+            _run_inference_iteration(
+                sess,
+                use_iobinding=use_iobinding,
+                io_binding=io_binding,
+                feeds=feeds,
+                output_names=output_names,
+            )
 
     print(
         f"[WARMUP_START] run_id={run_id} mode={mode} engine={engine} "
@@ -392,9 +457,15 @@ def run_harness(args: argparse.Namespace) -> None:
                 enable_profiling=False,
             )
             print(f"[MEASURE_SESSION] run_id={run_id} providers={sess.get_providers()}")
+            use_iobinding = args.engine != "igpu" or igpu_use_iobinding(args.device_id)
             io_binding = _create_io_binding(
                 sess, feeds, output_names, args.engine, args.device_id
             )
+            if args.engine == "igpu":
+                path = "iobinding+dml" if use_iobinding else "sess.run(feeds)"
+                print(f"[DML_IO] run_id={run_id} inference path={path}")
+        else:
+            use_iobinding = False
 
         _run_repeat(
             run_id=run_id,
@@ -412,6 +483,9 @@ def run_harness(args: argparse.Namespace) -> None:
             outfile=outfile,
             sess=sess,
             io_binding=io_binding,
+            feeds=feeds,
+            output_names=output_names,
+            use_iobinding=use_iobinding if args.mode != "idle" else False,
             ep_note=ep_note,
             csv_opset=csv_opset,
         )
