@@ -170,7 +170,9 @@ First harness invocation writes `results/metadata.json`:
 - `igpu_vgm_mb`, conda env name
 - Fill `upref_version` and `gpu_driver_version` manually after the session
 
-CSV columns per run include the same constants plus timing fields. Energy columns are filled during post-uProf analysis.
+CSV columns per run include the same constants plus timing fields (`t_start_epoch`, `t_end_epoch`)
+and block-context fields (`tier`, `block_id`, `shape_class` — see `metadata.json` → `csv_schema`).
+Energy columns are filled during post-uProf analysis.
 
 ---
 

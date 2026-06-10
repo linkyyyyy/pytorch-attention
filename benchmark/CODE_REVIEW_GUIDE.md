@@ -257,7 +257,7 @@ ONE shared loop for all operators, engines, and modes. Drives a duration-based i
 
 ### CSV columns filled by harness now
 
-`run_id`, `operator`, `cluster`, `engine`, `device_id`, `shape_index`, `input_shape`, `dtype`, **`opset` (from file)**, `intra_op_num_threads`, `graph_optimization_level`, `igpu_vgm_mb`, `repeat_idx`, `warmup_s`, `window_s`, `iterations_completed`, `wall_time_s`, `mean_latency_ms`, `notes`
+`run_id`, `operator`, `cluster`, `tier`, `block_id`, `shape_class`, `engine`, `device_id`, `shape_index`, `input_shape`, `dtype`, **`opset` (from file)**, `intra_op_num_threads`, `graph_optimization_level`, `igpu_vgm_mb`, `repeat_idx`, `warmup_s`, `window_s`, `iterations_completed`, `wall_time_s`, `t_start_epoch`, `t_end_epoch`, `mean_latency_ms`, `notes`
 
 **Left empty for post-uProf analysis:** `idle_power_w`, `active_power_w`, `window_energy_J`, `idle_energy_J`, `energy_per_op_J`, `dispatch_energy_J`
 

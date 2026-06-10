@@ -63,6 +63,17 @@ iGPU or NPU power counters exist on this platform.
   on uProf strings; midnight/DST ambiguity).
 - **Window bounds in `runs.csv`:** `t_start_epoch` / `t_end_epoch` from harness `time.time()` at
   `WINDOW_OPEN`/`WINDOW_CLOSE` — primary join key for `parse_energy.py`.
+- **Block-context columns in `runs.csv`** (after `cluster`, before `shape_index`):
+  - `tier` — `isolated` (single operator) or `fused_block` (whole attention-core graph); `n/a` for
+    idle/dispatch baselines.
+  - `block_id` — SDPA corner id: `sdpa_small`, `sdpa_avg`, `sdpa_large`; empty when not
+    block-scoped; `n/a` for baselines.
+  - `shape_class` — DSE corner: `small`, `avg`, or `large`; empty when unspecified; `n/a` for baselines.
+  - `fusion_member` — `True` / `False` (bool). Marks whether a row counts toward the Tier-1-vs-Tier-2
+    fusion gap (see §4 SDPA fusion-gap microbenchmark). Harness may not write this column yet — profiles
+    in `operators.py` carry the tag; confirm it lands in `runs.csv` before analysis.
+  Allowed values and example rows: `benchmark/results/metadata.json` → `csv_schema`.
+  **Conda env (all tower work):** `ryzen-ai-1.6.0`.
 - **Robust anchor (TODO):** capture uProf `Profile Start Time` and/or log epoch at `AMDuProfCLI`
   launch in `run_sweep.bat` so both traces share one reference instead of matching independent clocks.
 - Reference smoke captures: `benchmark/uprof_smoke/`.
@@ -84,6 +95,52 @@ methodology.
 GEMM/matmul, scaled dot-product attention, softmax, LayerNorm and RMSNorm, activations
 (ReLU / GELU / SiLU), RoPE, embedding/gather. (F1–F4 in the supervisor's original diagram
 were illustrative examples, not a ceiling.)
+
+### SDPA fusion-gap microbenchmark (Track 1 — primary sweep axis)
+
+**Two-tier measurement design:**
+- **Tier 1 (isolated):** each attention-core operator microbenchmarked as its own ONNX graph
+  (`tier=isolated`). Shapes derived from one shared `SdpaBlockConfig` per corner in
+  `benchmark/operators.py` — isolated and fused graphs stay in lockstep.
+- **Tier 2 (fused_block):** whole attention core as one graph (`attn_block_fused`,
+  `tier=fused_block`) — Q/K/V projections → reshape → scaled dot-product attention → output
+  projection, single `[N, D]` in / `[N, D]` out.
+
+**Fusion gap (per `engine`, `block_id`):**
+```
+gap_J = sum(energy_per_op_J for isolated rows where fusion_member=True)
+        − energy_per_op_J for the fused_block row
+```
+Implemented in `benchmark/analysis.py`. Only **five attention-core op families** are fusion
+members (`fusion_member=True`): `qkv_proj_gemm` (q, k, v — three profiles), `attn_score_matmul`,
+`softmax`, `attn_value_matmul`, `out_proj_gemm`. **LN / FFN / GELU / residual** are measured at
+the same `(N, D)` shapes but tagged `fusion_member=False` — context ops, excluded from the gap sum.
+
+**Fused graph status:** Tier 2 is currently the **unfused ONNX op chain** exported from a PyTorch
+`nn.Module` (`export_torch_module`, opset 20 / fallback 19). A `# TODO(tower)` in `operators.py`
+marks a future ORT `com.microsoft.MultiHeadAttention` / `Attention` contrib-op swap — **not a
+one-line change** (input-layout plumbing differs); must verify **DirectML + Vitis AI** on the tower
+before adopting.
+
+**SDPA shape corners (locked in `SDPA_BLOCK_CONFIGS`):**
+
+| `block_id` | `shape_class` | N | D | heads | head_dim |
+|---|---|---:|---:|---:|---:|
+| `sdpa_small` | small | 49 | 768 | 12 | 64 |
+| `sdpa_avg` | avg | 197 | 768 | 12 | 64 |
+| `sdpa_large` | large | 3136 | 768 | 12 | 64 |
+
+**D held constant (768) so energy varies with N (and N² attention scaling), not embed-dim sweep.**
+Only **avg** matches a verbatim repo block geometry (canonical ViT-B/16: 197 tokens, D=768,
+12 heads, head_dim=64). **small** (N=49) and **large** (N=3136) are controlled DSE points — real
+sequence lengths from the repo pyramid (EfficientFormer MHSA / PvT stage 1) with standardized D/heads.
+Note: repo `VisionTransformer()` default is **4 heads / head_dim=192** — deliberately overridden to
+canonical 12/64 for comparable SDPA geometry. See `directives/attention_block_dimensions.md`.
+
+**Track 2 (real mixer ops — not blocking SDPA sweep):** XCiT cross-covariance, PvT SRA conv,
+PoolFormer pool, depthwise LPI still carry **placeholder shapes** in the registry (e.g. XCiT profiles
+use fabricated 12/64/197 instead of real `xcit_nano` 4-head/head_dim-32/N-196; conv ops hardcode
+768 channels vs real per-stage dims). Correct before Track-2 measurement.
 
 ### Model-level (from the benchmark repo — see §8)
 The supervisor's guidance: use AI to identify the most *complex* models, then pick
@@ -182,7 +239,7 @@ PyTorch
 
 1. **The agent is never in the measurement loop.** AI editors/agents (Cursor, Claude Code, Hermes)
    are for *authoring and orchestration*. The benchmark is a *separate native Windows process* in
-   the Ryzen AI conda env, with uProf polling it. Where the agent generates its text has **zero**
+   the `ryzen-ai-1.6.0` conda env, with uProf polling it. Where the agent generates its text has **zero**
    bearing on recorded wattage or latency, as long as the benchmark runs natively. (WSL2 vs native
    Windows for an agent is a *convenience* question, not a telemetry one.)
 2. **Develop in one place, measure in a quiet room.** Write and debug in Cursor freely. For the
@@ -278,7 +335,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 ## 11. CURRENT STATUS / CHANGELOG
 
 - **2026-06-02 (Day 1):** uProf responsive via CLI. ONNX Runtime confirmed exposing CPU + DirectML +
-  Vitis AI EPs in one Ryzen AI conda env (single-environment rule satisfied). Tooling decided: Cursor now,
+  Vitis AI EPs in one `ryzen-ai-1.6.0` conda env (single-environment rule satisfied). Tooling decided: Cursor now,
   Claude Code idle-installed, Hermes deferred. This context file created.
   - GEMM plumbing test PASSED on CPU EP. Full pipeline validated end-to-end
     (PyTorch 2.7.1+cpu -> ONNX opset 17 -> ORT 1.23.0.dev -> inference -> timing).
@@ -375,9 +432,11 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
   | File | Purpose |
   |---|---|
-  | `benchmark/operators.py` | Operator registry (16 entries, Clusters A/B1/B2) + ONNX graph builders + one-time export |
+  | `benchmark/operators.py` | Operator registry + SDPA block configs + isolated/fused ONNX export (`attn_block_fused`) |
+  | `benchmark/analysis.py` | Fusion-gap analysis on `runs.csv` → `analysis_out.csv`; `--demo` synthetic fixture |
+  | `directives/attention_block_dimensions.md` | Per-architecture N/D extraction + SDPA corner rationale |
   | `benchmark/harness.py` | Single shared measurement loop — argparse, ORT session setup, WINDOW_OPEN/CLOSE markers, CSV append, EP placement verification |
-  | `benchmark/run_sweep.bat` | CMD orchestrator: conda activate → create session dir → uProf parent-wraps harness per (operator × engine × repeat) |
+  | `benchmark/run_sweep.bat` | CMD orchestrator: `conda activate ryzen-ai-1.6.0` → create session dir → uProf parent-wraps harness per (operator × engine × repeat) |
   | `benchmark/BENCHMARK_WORKFLOW.md` | User-facing CMD workflow guide (prerequisites, export, smoke test, baselines, sweep, troubleshooting) |
   | `benchmark/IMPLEMENTATION_BLUEPRINT.md` | Design spec: registry schema, harness CLI, dispatch baseline rationale, CSV schema, uProf parent-wrap pattern, locked defaults |
   | `benchmark/onnx_graphs/` | 16 pre-exported `.onnx` operator graphs (+ `dispatch_baseline.onnx`) for Netron inspection and ORT sessions |
@@ -407,7 +466,9 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   | `ffn_gemm` | iGPU | **0.716 ms**/iter |
   | `dispatch_baseline` | iGPU | **0.076 ms**/iter |
 
-  Session constants recorded in `benchmark/results/metadata.json`. Harness code under `benchmark/` (`operators.py`, `harness.py`, `run_sweep.bat`, `parse_energy.py`, `onnx_graphs/`, `results/`).
+  Session constants recorded in `benchmark/results/metadata.json` (includes `csv_schema` with
+  `tier` / `block_id` / `shape_class` allowed values and example rows). Harness code under
+  `benchmark/` (`operators.py`, `harness.py`, `run_sweep.bat`, `parse_energy.py`, `onnx_graphs/`, `results/`).
 
 - **2026-06-08 (Week 2, Day 1 — close-out):** All tower-verification items cleared.
 
@@ -434,15 +495,44 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
   **GUI note:** `timechart` output is **CSV-only** (no `.uprof` DB; confirmed in `timechart --help`). `collect` is a CPU profiler, not the package-power path. CSV→`.uprof` conversion is impossible. GUI viewing of power data not pursued — visual verification via `parse_energy.py --plot` PNGs instead. uProf-GUI practice deferred to a future CPU/GPU-profiling exercise where `collect`/`gputrace` is the correct tool.
 
+- **2026-06-10 (analysis layer — config extraction + fusion-gap pipeline):**
+  - **`directives/attention_block_dimensions.md`:** N/D/head dims pulled from repo model files;
+    proposed small/avg/large corners documented.
+  - **`operators.py`:** `SDPA_BLOCK_CONFIGS` (three corners); isolated-op shapes derived from config
+    (`fusion_member` tagging); `attn_block_fused` Tier-2 graphs (unfused ONNX chain).
+  - **`runs.csv` schema:** `tier`, `block_id`, `shape_class`, `fusion_member` (+ harness CLI
+    `--tier` / `--block-id` / `--shape-class`). Documented in `metadata.json` → `csv_schema`.
+  - **`analysis.py`:** Built and validated on synthetic data (`python analysis.py --demo`):
+    gap arithmetic confirmed **22 → 16 mJ = 6 mJ / 27.27%**; dispatch-baseline dedupe, repeat
+    aggregation (mean ± std), `fusion_member` filtering, incomplete/NaN guard all verified.
+  - **Unresolved assumption (must clear before trusting sweep output):** `WINDOW_ENERGY_IS_RAW=True`
+    in `analysis.py` — assumes `window_energy_J` is gross (dispatch still inside). Whether the
+    harness / `parse_energy.py` actually writes raw vs dispatch-netted `window_energy_J` is
+    **unconfirmed**. Verify against **one real uProf-joined row** before any full sweep analysis.
+
 - **Open — pending supervisor input (increasingly urgent):**
   - **Precision policy (§4 decision #2):** INT8-all engines vs native-best (FP32 CPU / FP16 iGPU / INT8 NPU). Unresolved; affects all cross-engine energy comparisons.
   - **PoolFormer vs PvT control pair** (architecture selection).
 
-- **TODO next (Week 2, Day 2):**
-  1. Validate `parse_energy.py` on toy capture on tower (re-run `--test-toy`; optional `--plot` with `matplotlib`)
-  2. Small real sweep — 2–3 operators × both engines — to prove full pipeline (harness → uProf CSV → enriched CSV)
-  3. Full 16-operator sweep (clean machine, editor closed)
-  4. Analysis: J/op, GFLOP/s-per-watt
-  5. Christoforos check-in
-  6. **Confirm BIOS VGM:** Set `IGPU_VGM_MB` in `benchmark/run_sweep.bat`; update metadata
-  7. **Run idle + dispatch baselines** under uProf (`idle_cpu`, `idle_igpu`, `dispatch_cpu`, `dispatch_igpu`)
+- **TODO next (tower session — gate before full SDPA sweep):**
+
+  **First action — one-row verification** (`ffn_gemm` at `sdpa_avg`, shape `197×768@768×3072`,
+  `conda activate ryzen-ai-1.6.0`, clean machine, editor closed). Join with uProf via
+  `parse_energy.py`, then run `analysis.py`. Confirm all five before sweeping:
+  1. **RAW vs NET convention** — does `window_energy_J` include dispatch overhead? Set
+     `WINDOW_ENERGY_IS_RAW` in `analysis.py` to match; watch for `dispatch_energy_J > window_energy_J`
+     warnings.
+  2. **`energy_per_op_J` positive and non-trivial** — not NaN, not ~0 (dispatch-dominated artifact).
+  3. **Sanity:** `energy_per_op_J × iterations_completed ≈ active package power × window_s` (order-of-magnitude).
+  4. **Iteration count in the thousands** — if suspiciously low, `synchronize_outputs()` on iGPU may have regressed.
+  5. **Exactly one dispatch baseline per engine** feeds subtraction (dedupe if duplicates; no double-count).
+
+  **After gate passes:**
+  - Export all SDPA shapes: `python operators.py --all-shapes`
+  - SDPA sweep: isolated fusion_member ops + `attn_block_fused` × 3 corners × 2 engines × repeats
+  - `parse_energy.py` → `analysis.py` → fusion-gap table per corner
+  - Idle + dispatch baselines under uProf if not already captured this session
+  - Confirm BIOS VGM → `IGPU_VGM_MB` in `run_sweep.bat` / metadata
+
+  **Deferred (not blocking SDPA sweep):** Track-2 real-mixer shape fixes (§4); Christoforos check-in;
+  full 18-model shortlist scope decisions (§4).

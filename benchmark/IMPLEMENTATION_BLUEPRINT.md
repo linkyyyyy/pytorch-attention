@@ -242,16 +242,20 @@ providers = [("DmlExecutionProvider", {"device_id": device_id})]
 ### 3.5 CSV schema (extended from spec §9)
 
 ```
-run_id, operator, cluster, engine, device_id, shape_index, input_shape, dtype, opset,
-intra_op_num_threads, graph_optimization_level, igpu_vgm_mb,
-repeat_idx, warmup_s, window_s, iterations_completed, wall_time_s, mean_latency_ms,
-idle_power_w, active_power_w, window_energy_J, idle_energy_J,
+run_id, operator, cluster, tier, block_id, shape_class, engine, device_id, shape_index,
+input_shape, dtype, opset, intra_op_num_threads, graph_optimization_level, igpu_vgm_mb,
+repeat_idx, warmup_s, window_s, iterations_completed, wall_time_s, t_start_epoch, t_end_epoch,
+mean_latency_ms, idle_power_w, active_power_w, window_energy_J, idle_energy_J,
 energy_per_op_J, dispatch_energy_J, notes
 ```
 
 | Filled by harness now | Left empty/NaN for post-uProf analysis |
 |---|---|
-| All identity/run-timing fields incl. `shape_index`, `intra_op_num_threads`, `graph_optimization_level`, `igpu_vgm_mb` (from constant/placeholder), `notes` | Energy/power columns |
+| All identity/run-timing fields incl. `tier`, `block_id`, `shape_class`, `shape_index`, `t_start_epoch`, `t_end_epoch`, `intra_op_num_threads`, `graph_optimization_level`, `igpu_vgm_mb` (from constant/placeholder), `notes` | Energy/power columns |
+
+**Block-context columns:** `tier` (`isolated` / `fused_block`), `block_id` (e.g. `vit_avg`),
+`shape_class` (`small` / `avg` / `large` / empty). Baselines use `n/a` for all three.
+See `metadata.json` → `csv_schema` and harness `--tier` / `--block-id` / `--shape-class`.
 
 `igpu_vgm_mb`: read from harness constant `IGPU_VGM_MB` (set at top of `harness.py` or env var `BENCHMARK_IGPU_VGM_MB`); workflow doc instructs user to set this to match BIOS before a session.
 

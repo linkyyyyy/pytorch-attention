@@ -11,7 +11,7 @@ import argparse
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -29,6 +29,220 @@ class OperatorEntry:
     shape_profiles: list[dict[str, Any]]
     dtype: str
     cluster: str
+
+
+@dataclass(frozen=True)
+class SdpaBlockConfig:
+    """Single source of shape truth for one SDPA attention-block corner."""
+
+    block_id: str
+    shape_class: str
+    N: int
+    D: int
+    num_heads: int
+    head_dim: int
+    mlp_ratio: int = 4
+
+    @property
+    def D_ff(self) -> int:
+        return self.D * self.mlp_ratio
+
+
+# DSE corners — all isolated-op shapes for SDPA block ops derive from these only.
+SDPA_BLOCK_CONFIGS: tuple[SdpaBlockConfig, ...] = (
+    SdpaBlockConfig(
+        block_id="sdpa_small",
+        shape_class="small",
+        N=49,
+        D=768,
+        num_heads=12,
+        head_dim=64,
+    ),
+    SdpaBlockConfig(
+        block_id="sdpa_avg",
+        shape_class="avg",
+        N=197,
+        D=768,
+        num_heads=12,
+        head_dim=64,
+    ),
+    SdpaBlockConfig(
+        block_id="sdpa_large",
+        shape_class="large",
+        N=3136,
+        D=768,
+        num_heads=12,
+        head_dim=64,
+    ),
+)
+
+SDPA_BLOCK_CONFIG_BY_ID: dict[str, SdpaBlockConfig] = {
+    cfg.block_id: cfg for cfg in SDPA_BLOCK_CONFIGS
+}
+
+
+def _block_context(cfg: SdpaBlockConfig, *, fusion_member: bool) -> dict[str, Any]:
+    return {
+        "block_id": cfg.block_id,
+        "shape_class": cfg.shape_class,
+        "tier": "isolated",
+        "fusion_member": fusion_member,
+    }
+
+
+def _gemm_profile(
+    cfg: SdpaBlockConfig,
+    label_suffix: str,
+    m: int,
+    k: int,
+    n: int,
+    *,
+    fusion_member: bool,
+) -> dict[str, Any]:
+    return {
+        "label": f"{cfg.block_id}_{label_suffix}",
+        "input_shape": f"{m}x{k}@{k}x{n}",
+        "tensors": {"m": m, "k": k, "n": n},
+        **_block_context(cfg, fusion_member=fusion_member),
+    }
+
+
+def _matmul_profile(
+    cfg: SdpaBlockConfig,
+    label_suffix: str,
+    a_shape: list[int],
+    b_shape: list[int],
+    *,
+    fusion_member: bool,
+) -> dict[str, Any]:
+    a_str = "x".join(str(d) for d in a_shape)
+    b_str = "x".join(str(d) for d in b_shape)
+    return {
+        "label": f"{cfg.block_id}_{label_suffix}",
+        "input_shape": f"{a_str}@{b_str}",
+        "tensors": {"a_shape": a_shape, "b_shape": b_shape},
+        **_block_context(cfg, fusion_member=fusion_member),
+    }
+
+
+def _tensor_profile(
+    cfg: SdpaBlockConfig,
+    label_suffix: str,
+    shape: list[int],
+    *,
+    fusion_member: bool,
+    axis: int | None = None,
+) -> dict[str, Any]:
+    tensors: dict[str, Any] = {"shape": shape}
+    if axis is not None:
+        tensors["axis"] = axis
+    profile: dict[str, Any] = {
+        "label": f"{cfg.block_id}_{label_suffix}",
+        "input_shape": "x".join(str(d) for d in shape),
+        "tensors": tensors,
+        **_block_context(cfg, fusion_member=fusion_member),
+    }
+    return profile
+
+
+def derive_isolated_profiles_for_block(cfg: SdpaBlockConfig) -> dict[str, list[dict[str, Any]]]:
+    """
+    Derive every isolated-operator shape profile for one SDPA block corner.
+    Summing runs that share cfg.block_id must reconstruct the ops inside that block.
+
+    fusion_member=True marks attention-core ops included in Tier-1-vs-Tier-2 fusion sums.
+    fusion_member=False marks structural context ops (LN, FFN, residual) still measured
+    at the same (N, D) but excluded from that fusion comparison.
+    """
+    H, N, D, hd = cfg.num_heads, cfg.N, cfg.D, cfg.head_dim
+    D_ff = cfg.D_ff
+    core = True
+    ctx = False
+    return {
+        "qkv_proj_gemm": [
+            _gemm_profile(cfg, "q_proj", N, D, D, fusion_member=core),
+            _gemm_profile(cfg, "k_proj", N, D, D, fusion_member=core),
+            _gemm_profile(cfg, "v_proj", N, D, D, fusion_member=core),
+        ],
+        "out_proj_gemm": [
+            _gemm_profile(cfg, "out_proj", N, D, D, fusion_member=core),
+        ],
+        "attn_score_matmul": [
+            _matmul_profile(
+                cfg,
+                "attn_qkt",
+                [H, N, hd],
+                [H, hd, N],
+                fusion_member=core,
+            ),
+        ],
+        "softmax": [
+            _tensor_profile(cfg, "attn_softmax", [H, N, N], fusion_member=core, axis=-1),
+        ],
+        "attn_value_matmul": [
+            _matmul_profile(
+                cfg,
+                "attn_av",
+                [H, N, N],
+                [H, N, hd],
+                fusion_member=core,
+            ),
+        ],
+        "layer_norm": [
+            _tensor_profile(cfg, "layer_norm", [N, D], fusion_member=ctx),
+        ],
+        "ffn_gemm": [
+            _gemm_profile(cfg, "ffn_expand", N, D, D_ff, fusion_member=ctx),
+            _gemm_profile(cfg, "ffn_contract", N, D_ff, D, fusion_member=ctx),
+        ],
+        "gelu": [
+            _tensor_profile(cfg, "ffn_gelu", [N, D_ff], fusion_member=ctx),
+        ],
+        "residual_add": [
+            _tensor_profile(cfg, "residual_add", [N, D], fusion_member=ctx),
+        ],
+    }
+
+
+def _merge_sdpa_profiles(
+    op_name: str,
+    *,
+    extra_profiles: Iterable[dict[str, Any]] = (),
+) -> list[dict[str, Any]]:
+    profiles: list[dict[str, Any]] = []
+    for cfg in SDPA_BLOCK_CONFIGS:
+        profiles.extend(derive_isolated_profiles_for_block(cfg)[op_name])
+    profiles.extend(extra_profiles)
+    return profiles
+
+
+def _sdpa_dims_from_profile(profile: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Read N, D, num_heads, head_dim from a fused-block shape profile."""
+    t = profile["tensors"]
+    return int(t["N"]), int(t["D"]), int(t["num_heads"]), int(t["head_dim"])
+
+
+def _fused_block_profile(cfg: SdpaBlockConfig) -> dict[str, Any]:
+    H, N, D, hd = cfg.num_heads, cfg.N, cfg.D, cfg.head_dim
+    return {
+        "label": cfg.block_id,
+        "input_shape": f"{N}x{D}",
+        "tensors": {
+            "N": N,
+            "D": D,
+            "num_heads": H,
+            "head_dim": hd,
+        },
+        "block_id": cfg.block_id,
+        "shape_class": cfg.shape_class,
+        "tier": "fused_block",
+        "fusion_member": True,
+    }
+
+
+def _fused_block_profiles() -> list[dict[str, Any]]:
+    """One fused attention-core graph per SDPA corner (shape_index 0/1/2)."""
+    return [_fused_block_profile(cfg) for cfg in SDPA_BLOCK_CONFIGS]
 
 
 OPSET = PREFERRED_OPSET
@@ -247,27 +461,28 @@ def _build_downsample_conv(path: Path, profile: dict[str, Any], opset: int) -> d
     return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
 
 
-def _build_ffn_gemm(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
-    import torch
-    import torch.nn as nn
+def _linear_gemm_dims(profile: dict[str, Any]) -> tuple[int, int, int]:
+    t = profile["tensors"]
+    return int(t["m"]), int(t["k"]), int(t["n"])
 
-    m, k, n = 197, 768, 3072
-    model = nn.Linear(k, n, bias=True).eval()
-    x = torch.randn(m, k)
-    export_torch_module(model, path, (x,), ["input"], ["output"], opset)
-    return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
+
+def _build_ffn_gemm(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
+    return _build_linear_gemm(path, profile, opset)
 
 
 def _build_gelu(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
-    return build_onnx_gelu_graph(path, [197, 3072], opset)
+    shape = profile["tensors"]["shape"]
+    return build_onnx_gelu_graph(path, shape, opset)
 
 
 def _build_layer_norm(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
     import torch
     import torch.nn as nn
 
-    model = nn.LayerNorm(768).eval()
-    x = torch.randn(197, 768)
+    shape = profile["tensors"]["shape"]
+    n_tokens, embed_dim = shape
+    model = nn.LayerNorm(embed_dim).eval()
+    x = torch.randn(n_tokens, embed_dim)
     export_torch_module(model, path, (x,), ["input"], ["output"], opset)
     return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
 
@@ -297,14 +512,23 @@ def _build_residual_add(path: Path, profile: dict[str, Any], opset: int) -> dict
     return build_onnx_residual_add_graph(path, shape, opset)
 
 
-def _build_qkv_proj(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
+def _build_linear_gemm(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
     import torch
     import torch.nn as nn
 
-    model = nn.Linear(768, 768, bias=True).eval()
-    x = torch.randn(197, 768)
+    m, k, n = _linear_gemm_dims(profile)
+    model = nn.Linear(k, n, bias=True).eval()
+    x = torch.randn(m, k)
     export_torch_module(model, path, (x,), ["input"], ["output"], opset)
     return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
+
+
+def _build_qkv_proj(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
+    return _build_linear_gemm(path, profile, opset)
+
+
+def _build_out_proj(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
+    return _build_linear_gemm(path, profile, opset)
 
 
 def _build_attn_score_matmul(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
@@ -325,6 +549,51 @@ def _build_attn_value_matmul(path: Path, profile: dict[str, Any], opset: int) ->
 def _build_softmax(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
     t = profile["tensors"]
     return build_onnx_softmax_graph(path, t["shape"], t["axis"], opset)
+
+
+def _build_attn_block_fused(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
+    """
+    Export unfused ONNX for the full SDPA attention core as one sequential graph.
+    Shapes come from profile tensors (SdpaBlockConfig) — same source as isolated ops.
+    """
+    import torch
+    import torch.nn as nn
+
+    n_tokens, embed_dim, num_heads, head_dim = _sdpa_dims_from_profile(profile)
+    assert embed_dim == num_heads * head_dim
+
+    class FusedAttentionCore(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.num_heads = num_heads
+            self.head_dim = head_dim
+            self.scale = head_dim ** -0.5
+            self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+            self.k_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+            self.v_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+            self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            # x: [N, D]
+            q = self.q_proj(x).view(n_tokens, self.num_heads, self.head_dim).transpose(0, 1)
+            k = self.k_proj(x).view(n_tokens, self.num_heads, self.head_dim).transpose(0, 1)
+            v = self.v_proj(x).view(n_tokens, self.num_heads, self.head_dim).transpose(0, 1)
+            # [H, N, head_dim] per projection
+
+            # TODO(tower): try ORT com.microsoft.MultiHeadAttention / Attention fused contrib op
+            # and verify DirectML + Vitis AI support — replace the unfused MatMul+Softmax+MatMul
+            # chain below once EP compatibility is confirmed on the HX 370 tower.
+            attn = (q @ k.transpose(-1, -2)) * self.scale
+            attn = attn.softmax(dim=-1)
+            out = attn @ v
+
+            out = out.transpose(0, 1).reshape(n_tokens, embed_dim)
+            return self.out_proj(out)
+
+    x = torch.randn(n_tokens, embed_dim)
+    model = FusedAttentionCore().eval()
+    export_torch_module(model, path, (x,), ["input"], ["output"], opset)
+    return {"feeds": {"input": x.numpy().astype(np.float32)}, "output_names": ["output"]}
 
 
 def _build_sra_conv(path: Path, profile: dict[str, Any], opset: int) -> dict[str, Any]:
@@ -382,9 +651,18 @@ def _build_depthwise_conv(path: Path, profile: dict[str, Any], opset: int) -> di
 # Registry
 # ---------------------------------------------------------------------------
 
-H = 12
-N = 197
-HEAD_DIM = 64
+# XCiT cross-covariance matmul — not derived from SDPA block configs.
+_XCIT_COV_PROFILE = {
+    "label": "xcit_cross_cov",
+    "input_shape": "12x64x197@12x197x64",
+    "tensors": {"a_shape": [12, 64, 197], "b_shape": [12, 197, 64]},
+}
+
+_XCIT_SOFTMAX_PROFILE = {
+    "label": "xcit_channel_matrix",
+    "input_shape": "12x64x64",
+    "tensors": {"shape": [12, 64, 64], "axis": -1},
+}
 
 OPERATOR_REGISTRY: dict[str, OperatorEntry] = {
     "patch_embed_conv2d": OperatorEntry(
@@ -412,33 +690,21 @@ OPERATOR_REGISTRY: dict[str, OperatorEntry] = {
     "ffn_gemm": OperatorEntry(
         name="ffn_gemm",
         build_fn=_build_ffn_gemm,
-        shape_profiles=[{
-            "label": "vit_ffn_expand",
-            "input_shape": "197x768@768x3072",
-            "tensors": {},
-        }],
+        shape_profiles=_merge_sdpa_profiles("ffn_gemm"),
         dtype="float32",
         cluster="A",
     ),
     "gelu": OperatorEntry(
         name="gelu",
         build_fn=_build_gelu,
-        shape_profiles=[{
-            "label": "ffn_activation",
-            "input_shape": "197x3072",
-            "tensors": {},
-        }],
+        shape_profiles=_merge_sdpa_profiles("gelu"),
         dtype="float32",
         cluster="A",
     ),
     "layer_norm": OperatorEntry(
         name="layer_norm",
         build_fn=_build_layer_norm,
-        shape_profiles=[{
-            "label": "vit_layernorm",
-            "input_shape": "197x768",
-            "tensors": {},
-        }],
+        shape_profiles=_merge_sdpa_profiles("layer_norm"),
         dtype="float32",
         cluster="A",
     ),
@@ -467,73 +733,59 @@ OPERATOR_REGISTRY: dict[str, OperatorEntry] = {
     "residual_add": OperatorEntry(
         name="residual_add",
         build_fn=_build_residual_add,
-        shape_profiles=[{
-            "label": "skip_connection",
-            "input_shape": "197x768+197x768",
-            "tensors": {"shape": [197, 768]},
-        }],
+        shape_profiles=_merge_sdpa_profiles("residual_add"),
         dtype="float32",
         cluster="A",
     ),
     "qkv_proj_gemm": OperatorEntry(
         name="qkv_proj_gemm",
         build_fn=_build_qkv_proj,
-        shape_profiles=[{
-            "label": "attn_projection",
-            "input_shape": "197x768@768x768",
-            "tensors": {},
-        }],
+        shape_profiles=_merge_sdpa_profiles("qkv_proj_gemm"),
+        dtype="float32",
+        cluster="B1",
+    ),
+    "out_proj_gemm": OperatorEntry(
+        name="out_proj_gemm",
+        build_fn=_build_out_proj,
+        shape_profiles=_merge_sdpa_profiles("out_proj_gemm"),
         dtype="float32",
         cluster="B1",
     ),
     "attn_score_matmul": OperatorEntry(
         name="attn_score_matmul",
         build_fn=_build_attn_score_matmul,
-        shape_profiles=[{
-            "label": "vit_mha_qkt",
-            "input_shape": f"{H}x{N}x{HEAD_DIM}@{H}x{HEAD_DIM}x{N}",
-            "tensors": {"a_shape": [H, N, HEAD_DIM], "b_shape": [H, HEAD_DIM, N]},
-        }],
+        shape_profiles=_merge_sdpa_profiles("attn_score_matmul"),
         dtype="float32",
         cluster="B1",
     ),
     "xcit_cov_matmul": OperatorEntry(
         name="xcit_cov_matmul",
         build_fn=_build_xcit_cov_matmul,
-        shape_profiles=[{
-            "label": "xcit_cross_cov",
-            "input_shape": f"{H}x{HEAD_DIM}x{N}@{H}x{N}x{HEAD_DIM}",
-            "tensors": {"a_shape": [H, HEAD_DIM, N], "b_shape": [H, N, HEAD_DIM]},
-        }],
+        shape_profiles=[_XCIT_COV_PROFILE],
         dtype="float32",
         cluster="B1",
     ),
     "softmax": OperatorEntry(
         name="softmax",
         build_fn=_build_softmax,
-        shape_profiles=[
-            {
-                "label": "vit_attn_scores",
-                "input_shape": f"{H}x{N}x{N}",
-                "tensors": {"shape": [H, N, N], "axis": -1},
-            },
-            {
-                "label": "xcit_channel_matrix",
-                "input_shape": f"{H}x{HEAD_DIM}x{HEAD_DIM}",
-                "tensors": {"shape": [H, HEAD_DIM, HEAD_DIM], "axis": -1},
-            },
-        ],
+        shape_profiles=_merge_sdpa_profiles(
+            "softmax",
+            extra_profiles=[_XCIT_SOFTMAX_PROFILE],
+        ),
         dtype="float32",
         cluster="B1",
     ),
     "attn_value_matmul": OperatorEntry(
         name="attn_value_matmul",
         build_fn=_build_attn_value_matmul,
-        shape_profiles=[{
-            "label": "vit_mha_av",
-            "input_shape": f"{H}x{N}x{N}@{H}x{N}x{HEAD_DIM}",
-            "tensors": {"a_shape": [H, N, N], "b_shape": [H, N, HEAD_DIM]},
-        }],
+        shape_profiles=_merge_sdpa_profiles("attn_value_matmul"),
+        dtype="float32",
+        cluster="B1",
+    ),
+    "attn_block_fused": OperatorEntry(
+        name="attn_block_fused",
+        build_fn=_build_attn_block_fused,
+        shape_profiles=_fused_block_profiles(),
         dtype="float32",
         cluster="B1",
     ),
@@ -594,6 +846,12 @@ def get_shape_profile(name: str, shape_index: int) -> dict[str, Any]:
             f"(profiles={len(entry.shape_profiles)})"
         )
     return entry.shape_profiles[shape_index]
+
+
+def list_profiles_for_block(block_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Return isolated-op profiles for one SDPA block corner, keyed by operator name."""
+    cfg = SDPA_BLOCK_CONFIG_BY_ID[block_id]
+    return derive_isolated_profiles_for_block(cfg)
 
 
 def build_operator_graph(name: str, shape_index: int = 0) -> tuple[Path, dict[str, Any], OperatorEntry]:

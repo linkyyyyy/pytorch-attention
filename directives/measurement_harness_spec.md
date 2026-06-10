@@ -161,14 +161,25 @@ uProf runs as parent process; `python harness.py` runs as **child** (`AMDuProfCL
 ## 9. Output schema (one CSV row per run)
 
 ```
-run_id, operator, cluster, engine, device_id, shape_index, input_shape, dtype, opset,
-intra_op_num_threads, graph_optimization_level, igpu_vgm_mb,
-repeat_idx, warmup_s, window_s, iterations_completed, wall_time_s, mean_latency_ms,
-idle_power_w, active_power_w, window_energy_J, idle_energy_J,
+run_id, operator, cluster, tier, block_id, shape_class, engine, device_id, shape_index,
+input_shape, dtype, opset, intra_op_num_threads, graph_optimization_level, igpu_vgm_mb,
+repeat_idx, warmup_s, window_s, iterations_completed, wall_time_s, t_start_epoch, t_end_epoch,
+mean_latency_ms, idle_power_w, active_power_w, window_energy_J, idle_energy_J,
 energy_per_op_J, dispatch_energy_J, notes
 ```
 
-Energy/power columns filled post-uProf. `cluster` (A / B1 / B2) on every row.
+Energy/power columns filled post-uProf. `cluster` (A / B1 / B2 / baseline) on every row.
+
+**Block-context columns** (between `cluster` and `engine`):
+
+| Column | Measure-mode values | Baseline values |
+|---|---|---|
+| `tier` | `isolated`, `fused_block` | `n/a` |
+| `block_id` | free-form string (e.g. `vit_avg`); empty if not block-scoped | `n/a` |
+| `shape_class` | `small`, `avg`, `large`, or empty | `n/a` |
+
+Harness flags: `--tier`, `--block-id`, `--shape-class`. Full schema + example rows in
+`benchmark/results/metadata.json` → `csv_schema`.
 
 ---
 

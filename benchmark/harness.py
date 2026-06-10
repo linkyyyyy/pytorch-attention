@@ -46,6 +46,9 @@ CSV_HEADER = [
     "run_id",
     "operator",
     "cluster",
+    "tier",
+    "block_id",
+    "shape_class",
     "engine",
     "device_id",
     "shape_index",
@@ -72,6 +75,160 @@ CSV_HEADER = [
     "notes",
 ]
 
+# Illustrative rows for schema documentation (not written to disk automatically).
+CSV_EXAMPLE_ROWS: list[dict[str, Any]] = [
+    {
+        "run_id": "attn_score_matmul_vit_avg_cpu_r0",
+        "operator": "attn_score_matmul",
+        "cluster": "B1",
+        "tier": "isolated",
+        "block_id": "vit_avg",
+        "shape_class": "avg",
+        "engine": "cpu",
+        "device_id": 0,
+        "shape_index": 0,
+        "input_shape": "12x197x64@12x64x197",
+        "dtype": "float32",
+        "opset": 20,
+        "intra_op_num_threads": 12,
+        "graph_optimization_level": "ORT_ENABLE_ALL",
+        "igpu_vgm_mb": "512",
+        "repeat_idx": 0,
+        "warmup_s": 5.0,
+        "window_s": 30.0,
+        "iterations_completed": 27980,
+        "wall_time_s": "30.000000",
+        "t_start_epoch": "1780925790.173200",
+        "t_end_epoch": "1780925820.173200",
+        "mean_latency_ms": "1.072195",
+        "idle_power_w": "",
+        "active_power_w": "",
+        "window_energy_J": "",
+        "idle_energy_J": "",
+        "energy_per_op_J": "",
+        "dispatch_energy_J": "",
+        "notes": "threads=12; graph_opt=ORT_ENABLE_ALL; vgm_mb=512; EP_OK: intended=CPUExecutionProvider",
+    },
+    {
+        "run_id": "fused_block_vit_avg_igpu_r0",
+        "operator": "fused_block",
+        "cluster": "B1",
+        "tier": "fused_block",
+        "block_id": "vit_avg",
+        "shape_class": "avg",
+        "engine": "igpu",
+        "device_id": 0,
+        "shape_index": 0,
+        "input_shape": "fused_qkv_attn_proj",
+        "dtype": "float32",
+        "opset": 20,
+        "intra_op_num_threads": 12,
+        "graph_optimization_level": "ORT_ENABLE_ALL",
+        "igpu_vgm_mb": "512",
+        "repeat_idx": 0,
+        "warmup_s": 5.0,
+        "window_s": 30.0,
+        "iterations_completed": 41800,
+        "wall_time_s": "30.000000",
+        "t_start_epoch": "1780925790.173200",
+        "t_end_epoch": "1780925820.173200",
+        "mean_latency_ms": "0.716000",
+        "idle_power_w": "",
+        "active_power_w": "",
+        "window_energy_J": "",
+        "idle_energy_J": "",
+        "energy_per_op_J": "",
+        "dispatch_energy_J": "",
+        "notes": "threads=12; graph_opt=ORT_ENABLE_ALL; vgm_mb=512; EP_OK: intended=DmlExecutionProvider",
+    },
+    {
+        "run_id": "dispatch_baseline_igpu_r0",
+        "operator": "dispatch_baseline",
+        "cluster": "baseline",
+        "tier": "n/a",
+        "block_id": "n/a",
+        "shape_class": "n/a",
+        "engine": "igpu",
+        "device_id": 0,
+        "shape_index": -1,
+        "input_shape": "1",
+        "dtype": "float32",
+        "opset": 20,
+        "intra_op_num_threads": 12,
+        "graph_optimization_level": "ORT_ENABLE_ALL",
+        "igpu_vgm_mb": "512",
+        "repeat_idx": 0,
+        "warmup_s": 5.0,
+        "window_s": 30.0,
+        "iterations_completed": 394000,
+        "wall_time_s": "30.000000",
+        "t_start_epoch": "1780925790.173200",
+        "t_end_epoch": "1780925820.173200",
+        "mean_latency_ms": "0.076000",
+        "idle_power_w": "",
+        "active_power_w": "",
+        "window_energy_J": "",
+        "idle_energy_J": "",
+        "energy_per_op_J": "",
+        "dispatch_energy_J": "",
+        "notes": "threads=12; graph_opt=ORT_ENABLE_ALL; vgm_mb=512",
+    },
+    {
+        "run_id": "idle_cpu_r0",
+        "operator": "idle",
+        "cluster": "baseline",
+        "tier": "n/a",
+        "block_id": "n/a",
+        "shape_class": "n/a",
+        "engine": "cpu",
+        "device_id": 0,
+        "shape_index": -1,
+        "input_shape": "n/a",
+        "dtype": "n/a",
+        "opset": "n/a",
+        "intra_op_num_threads": 12,
+        "graph_optimization_level": "ORT_ENABLE_ALL",
+        "igpu_vgm_mb": "512",
+        "repeat_idx": 0,
+        "warmup_s": 5.0,
+        "window_s": 30.0,
+        "iterations_completed": 3000,
+        "wall_time_s": "30.000000",
+        "t_start_epoch": "1780925790.173200",
+        "t_end_epoch": "1780925820.173200",
+        "mean_latency_ms": "10.000000",
+        "idle_power_w": "",
+        "active_power_w": "",
+        "window_energy_J": "",
+        "idle_energy_J": "",
+        "energy_per_op_J": "",
+        "dispatch_energy_J": "",
+        "notes": "threads=12; graph_opt=ORT_ENABLE_ALL; vgm_mb=512",
+    },
+]
+
+CSV_SCHEMA_DOC: dict[str, Any] = {
+    "columns": CSV_HEADER,
+    "block_context_columns": {
+        "tier": {
+            "description": "Whether the run measures a single isolated operator or a fused attention block.",
+            "allowed_measure": ["isolated", "fused_block"],
+            "allowed_baseline": ["n/a"],
+        },
+        "block_id": {
+            "description": "Attention-block config identifier (e.g. vit_avg, pvt_stage1, efficientformer_small).",
+            "allowed_measure": "free-form string; empty when not block-scoped",
+            "allowed_baseline": ["n/a"],
+        },
+        "shape_class": {
+            "description": "DSE corner label for (N, D) attention-block shape.",
+            "allowed_measure": ["small", "avg", "large", ""],
+            "allowed_baseline": ["n/a"],
+        },
+    },
+    "example_rows": CSV_EXAMPLE_ROWS,
+}
+
 
 def _igpu_vgm_mb() -> str:
     return os.environ.get("BENCHMARK_IGPU_VGM_MB", "512")
@@ -90,10 +247,11 @@ def _read_graph_opset(onnx_path: Path) -> int:
     return int(model.opset_import[0].version)
 
 
-def _write_metadata_once() -> None:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    if METADATA_PATH.exists():
-        return
+def _ensure_csv_schema_in_metadata(metadata: dict[str, Any]) -> None:
+    metadata["csv_schema"] = CSV_SCHEMA_DOC
+
+
+def _session_metadata_fields() -> dict[str, Any]:
     try:
         import onnxruntime as ort
         ort_version = ort.__version__
@@ -101,8 +259,7 @@ def _write_metadata_once() -> None:
     except ImportError:
         ort_version = "unknown"
         providers = []
-
-    metadata = {
+    return {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "ort_version": ort_version,
         "available_providers": providers,
@@ -110,7 +267,7 @@ def _write_metadata_once() -> None:
         "intra_op_num_threads": INTRA_OP_NUM_THREADS,
         "graph_optimization_level": GRAPH_OPTIMIZATION_LEVEL_NAME,
         "igpu_vgm_mb": _igpu_vgm_mb(),
-        "conda_env": os.environ.get("CONDA_DEFAULT_ENV", ""),
+        "conda_env": os.environ.get("CONDA_DEFAULT_ENV", "ryzen-ai-1.6.0"),
         "uprof_version": "",  # fill manually after session
         "gpu_driver_version": "",  # fill manually after session
         "notes": (
@@ -118,8 +275,30 @@ def _write_metadata_once() -> None:
             "idle baseline for static floor"
         ),
     }
-    METADATA_PATH.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    print(f"[metadata] wrote {METADATA_PATH}")
+
+
+def _write_metadata_once() -> None:
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    metadata: dict[str, Any] = {}
+    if METADATA_PATH.exists():
+        try:
+            metadata = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            metadata = {}
+
+    needs_write = False
+    if "csv_schema" not in metadata:
+        _ensure_csv_schema_in_metadata(metadata)
+        needs_write = True
+
+    # Template metadata.json (empty created_utc) → fill session header on first harness run.
+    if not metadata.get("created_utc"):
+        metadata.update(_session_metadata_fields())
+        needs_write = True
+
+    if needs_write:
+        METADATA_PATH.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        print(f"[metadata] wrote {METADATA_PATH}")
 
 
 def _make_session_options(engine: str, enable_profiling: bool) -> Any:
@@ -305,6 +484,9 @@ def _run_repeat(
     mode: str,
     operator: str,
     cluster: str,
+    tier: str,
+    block_id: str,
+    shape_class: str,
     engine: str,
     device_id: int,
     shape_index: int,
@@ -373,6 +555,9 @@ def _run_repeat(
             "run_id": run_id,
             "operator": operator,
             "cluster": cluster,
+            "tier": tier,
+            "block_id": block_id,
+            "shape_class": shape_class,
             "engine": engine,
             "device_id": device_id,
             "shape_index": shape_index,
@@ -433,6 +618,15 @@ def run_harness(args: argparse.Namespace) -> None:
         dtype = "n/a"
         csv_opset = "n/a"
 
+    if args.mode == "measure":
+        tier = args.tier
+        block_id = args.block_id
+        shape_class = args.shape_class
+    else:
+        tier = "n/a"
+        block_id = "n/a"
+        shape_class = "n/a"
+
     base_run_id = args.run_id or f"{operator}_{args.engine}"
 
     for repeat_idx in range(args.repeats):
@@ -476,6 +670,9 @@ def run_harness(args: argparse.Namespace) -> None:
             mode=args.mode,
             operator=operator,
             cluster=cluster,
+            tier=tier,
+            block_id=block_id,
+            shape_class=shape_class,
             engine=args.engine,
             device_id=args.device_id,
             shape_index=args.shape_index if args.mode == "measure" else -1,
@@ -509,6 +706,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--mode", choices=["measure", "idle", "dispatch"], default="measure")
     parser.add_argument("--shape-index", type=int, default=0)
+    parser.add_argument(
+        "--tier",
+        choices=["isolated", "fused_block"],
+        default="isolated",
+        help="isolated=single operator; fused_block=full attention block graph",
+    )
+    parser.add_argument(
+        "--block-id",
+        default="",
+        help="Attention-block config id (e.g. vit_avg, pvt_stage1); empty when not block-scoped",
+    )
+    parser.add_argument(
+        "--shape-class",
+        choices=["", "small", "avg", "large"],
+        default="",
+        help="DSE corner: small / avg / large (from attention_block_dimensions.md)",
+    )
     parser.add_argument("--outfile", default=str(DEFAULT_OUTFILE))
     parser.add_argument("--run-id", default="", help="Run id prefix (set by run_sweep.bat)")
     args = parser.parse_args(argv)
