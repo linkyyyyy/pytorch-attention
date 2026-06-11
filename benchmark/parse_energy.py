@@ -4,8 +4,8 @@ parse_energy.py — Join harness timing data with uProf power traces.
 Deterministic, reproducible post-processing (no AI/LLM). Reads runs.csv epoch window
 bounds and integrates socket0-package-power from uProf timechart CSVs.
 
-Headline formula:
-    energy_per_op_J = (window_energy_J - dispatch_energy_J) / iterations_completed
+Window energy stays RAW (WINDOW_ENERGY_IS_RAW=True in analysis.py).
+parse_energy joins uProf integrals only; baseline subtraction is in analysis.py.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -37,6 +38,9 @@ PROFILE_START_RE = re.compile(
 RECORDS_HEADER = "RecordId,Timestamp,socket0-package-power"
 WINDOW_OPEN_RE = re.compile(r"\[WINDOW_OPEN\].*t_start=([\d.]+)")
 WINDOW_CLOSE_RE = re.compile(r"\[WINDOW_CLOSE\].*t_end=([\d.]+)")
+
+DISPATCH_OPERATORS = frozenset({"dispatch_baseline", "dispatch"})
+IDLE_OPERATOR = "idle"
 
 
 @dataclass(frozen=True)
@@ -186,13 +190,44 @@ def parse_window_from_log(log_path: Path) -> tuple[float, float]:
     return float(m_open.group(1)), float(m_close.group(1))
 
 
+def _uprof_match_stems(run_id: str) -> list[str]:
+    """Keys for matching uProf -o folder names and harness --run-id in CSV preamble."""
+    stems: list[str] = [run_id]
+    if run_id.endswith("._r0"):
+        stems.append(run_id[:-4])  # dispatch_baseline_npu_r0._r0 -> ...npu_r0.
+        stems.append(run_id.replace("._r0", ""))  # -> ...npu_r0
+    m = re.match(r"^(.*)_r\d+$", run_id)
+    if m:
+        stems.append(m.group(1))  # ffn_gemm_npu_smoke_r0 -> ffn_gemm_npu_smoke
+    # de-dupe, longest first (more specific match first)
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in sorted(stems, key=len, reverse=True):
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def find_uprof_csv(uprof_dir: Path, run_id: str) -> Path | None:
-    direct = uprof_dir / f"{run_id}.csv"
-    if direct.exists():
-        return direct
+    for stem in _uprof_match_stems(run_id):
+        direct = uprof_dir / f"{stem}.csv"
+        if direct.exists():
+            return direct
+        nested = uprof_dir / stem / "timechart.csv"
+        if nested.is_file():
+            return nested
+        # uProf -o paths may omit trailing punctuation from a mistyped --run-id
+        stem_rstrip = stem.rstrip(".")
+        if stem_rstrip != stem:
+            nested2 = uprof_dir / stem_rstrip / "timechart.csv"
+            if nested2.is_file():
+                return nested2
     for p in uprof_dir.rglob("timechart.csv"):
-        if run_id in p.read_text(encoding="utf-8", errors="replace"):
-            return p
+        text = p.read_text(encoding="utf-8", errors="replace")
+        for stem in _uprof_match_stems(run_id):
+            if stem in text:
+                return p
     return None
 
 
@@ -233,27 +268,108 @@ def save_plot(
     return out_path
 
 
-def load_dispatch_energies(
+def _run_base(run_id: str) -> str:
+    m = re.match(r"^(.*)_r\d+$", run_id.strip())
+    return m.group(1) if m else run_id.strip()
+
+
+def _window_energy_for_row(
+    row: dict[str, str],
+    uprof_dir: Path,
+) -> tuple[float, float, float, list[PowerSample]] | None:
+    """Integrate uProf window for one harness row; None if join fails."""
+    run_id = row["run_id"]
+    t_start_s = row.get("t_start_epoch", "").strip()
+    t_end_s = row.get("t_end_epoch", "").strip()
+    if not t_start_s or not t_end_s:
+        log_path = uprof_dir / f"{run_id}.log"
+        if log_path.exists():
+            t_start, t_end = parse_window_from_log(log_path)
+        else:
+            return None
+    else:
+        t_start, t_end = float(t_start_s), float(t_end_s)
+
+    uprof_path = find_uprof_csv(uprof_dir, run_id)
+    if not uprof_path:
+        return None
+
+    samples = parse_uprof_csv(uprof_path)
+    window_j = integrate_power(samples, t_start, t_end)
+    return t_start, t_end, window_j, samples
+
+
+def load_idle_mean_j(
     rows: list[dict[str, str]],
     uprof_dir: Path,
-) -> dict[tuple[str, int], float]:
-    """Per (engine, repeat_idx) dispatch window energy in joules."""
-    out: dict[tuple[str, int], float] = {}
+) -> float | None:
+    """Mean idle window energy (J) over all idle captures; engine tag is metadata only."""
+    values: list[float] = []
     for row in rows:
+        if row.get("operator") != IDLE_OPERATOR:
+            continue
+        joined = _window_energy_for_row(row, uprof_dir)
+        if joined:
+            values.append(joined[2])
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def load_dispatch_mean_j_by_engine(
+    rows: list[dict[str, str]],
+    uprof_dir: Path,
+) -> dict[str, float]:
+    """Mean dispatch window energy (J) per engine over all dispatch captures."""
+    by_engine: dict[str, list[float]] = {}
+    for row in rows:
+        if row.get("operator") not in DISPATCH_OPERATORS:
+            continue
+        joined = _window_energy_for_row(row, uprof_dir)
+        if not joined:
+            continue
+        by_engine.setdefault(row["engine"], []).append(joined[2])
+    return {engine: sum(vals) / len(vals) for engine, vals in by_engine.items()}
+
+
+def _dedup_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Dedup exact run_id (keep latest) then baseline rows per (engine, run_base)."""
+    by_run_id: dict[str, dict[str, str]] = {}
+    for row in rows:
+        rid = row["run_id"]
+        if rid in by_run_id:
+            warnings.warn(f"Duplicate run_id {rid!r}; keeping latest row.", stacklevel=2)
+        by_run_id[rid] = row
+    deduped = list(by_run_id.values())
+
+    kept: list[dict[str, str]] = []
+    seen_baseline: set[tuple[str, str, str]] = set()
+    for row in deduped:
         op = row.get("operator", "")
-        if op not in ("dispatch_baseline", "dispatch"):
+        if op in DISPATCH_OPERATORS:
+            key = ("dispatch", row["engine"], _run_base(row["run_id"]))
+        elif op == IDLE_OPERATOR:
+            key = ("idle", row["engine"], _run_base(row["run_id"]))
+        else:
+            kept.append(row)
             continue
-        engine = row["engine"]
-        repeat = int(row.get("repeat_idx", 0))
-        uprof_path = find_uprof_csv(uprof_dir, row["run_id"])
-        if not uprof_path:
-            continue
-        samples = parse_uprof_csv(uprof_path)
-        t_start = float(row.get("t_start_epoch") or 0)
-        t_end = float(row.get("t_end_epoch") or 0)
-        if t_start and t_end:
-            out[(engine, repeat)] = integrate_power(samples, t_start, t_end)
-    return out
+        if key in seen_baseline:
+            warnings.warn(
+                f"Duplicate baseline row for engine={row['engine']!r} "
+                f"run_base={_run_base(row['run_id'])!r} mode={key[0]}; keeping latest.",
+                stacklevel=2,
+            )
+            kept = [r for r in kept if not (
+                (r.get("operator") in DISPATCH_OPERATORS and key[0] == "dispatch"
+                 and r["engine"] == row["engine"]
+                 and _run_base(r["run_id"]) == key[2])
+                or (r.get("operator") == IDLE_OPERATOR and key[0] == "idle"
+                    and r["engine"] == row["engine"]
+                    and _run_base(r["run_id"]) == key[2])
+            )]
+        seen_baseline.add(key)
+        kept.append(row)
+    return kept
 
 
 def enrich_runs(
@@ -269,71 +385,78 @@ def enrich_runs(
         raise ValueError(f"No rows in {runs_path}")
 
     fieldnames = list(rows[0].keys())
-    for col in ("window_energy_J", "dispatch_energy_J", "energy_per_op_J"):
+    for col in ("window_energy_J", "idle_energy_J", "dispatch_energy_J", "energy_per_op_J"):
         if col not in fieldnames:
             fieldnames.append(col)
 
-    dispatch_map = load_dispatch_energies(rows, uprof_dir)
+    idle_mean_j = load_idle_mean_j(rows, uprof_dir)
+    dispatch_mean_j = load_dispatch_mean_j_by_engine(rows, uprof_dir)
+    if idle_mean_j is None:
+        print("[WARN] no idle captures; idle_energy_J left empty — headline will be unsubtracted")
+    else:
+        print(f"[idle_mean_J] {idle_mean_j:.2f} J (mean over all idle captures)")
+    warned_dispatch_engines: set[str] = set()
     enriched: list[dict[str, str]] = []
 
     for row in rows:
         run_id = row["run_id"]
         op = row.get("operator", "")
         engine = row["engine"]
-        repeat = int(row.get("repeat_idx", 0))
-        iterations = int(row.get("iterations_completed", 0) or 0)
 
-        if op in ("idle",):
-            row["window_energy_J"] = ""
-            row["dispatch_energy_J"] = ""
-            row["energy_per_op_J"] = ""
+        joined = _window_energy_for_row(row, uprof_dir)
+        if not joined:
+            print(f"[SKIP] {run_id}: uProf join failed (epochs or CSV missing)")
+            row.setdefault("window_energy_J", "")
+            row.setdefault("idle_energy_J", "")
+            row.setdefault("dispatch_energy_J", "")
+            row.setdefault("energy_per_op_J", "")
             enriched.append(row)
             continue
 
-        t_start_s = row.get("t_start_epoch", "").strip()
-        t_end_s = row.get("t_end_epoch", "").strip()
-        if not t_start_s or not t_end_s:
-            log_path = uprof_dir / f"{run_id}.log"
-            if log_path.exists():
-                t_start, t_end = parse_window_from_log(log_path)
-            else:
-                print(f"[SKIP] {run_id}: missing t_start_epoch/t_end_epoch and no log")
-                enriched.append(row)
-                continue
-        else:
-            t_start, t_end = float(t_start_s), float(t_end_s)
-
-        uprof_path = find_uprof_csv(uprof_dir, run_id)
-        if not uprof_path:
-            print(f"[SKIP] {run_id}: uProf CSV not found under {uprof_dir}")
-            enriched.append(row)
-            continue
-
-        samples = parse_uprof_csv(uprof_path)
-        window_j = integrate_power(samples, t_start, t_end)
+        t_start, t_end, window_j, samples = joined
         n_in_window = _samples_in_window_count(samples, t_start, t_end)
 
-        dispatch_j = 0.0
-        if op not in ("dispatch_baseline", "dispatch"):
-            dispatch_j = dispatch_map.get((engine, repeat), 0.0)
-
-        e_per_op = energy_per_op(window_j, dispatch_j, iterations)
-
-        print(
-            f"[{run_id}] t_start={t_start:.6f} t_end={t_end:.6f} "
-            f"samples_in_window={n_in_window} window_energy_J={window_j:.2f} "
-            f"dispatch_energy_J={dispatch_j:.2f} energy_per_op_J={e_per_op:.6e}"
-        )
-
         row["window_energy_J"] = f"{window_j:.6f}"
-        row["dispatch_energy_J"] = f"{dispatch_j:.6f}" if dispatch_j else ""
-        row["energy_per_op_J"] = f"{e_per_op:.6e}" if iterations else ""
+        row["energy_per_op_J"] = ""
+
+        if op == IDLE_OPERATOR:
+            row["idle_energy_J"] = ""
+            row["dispatch_energy_J"] = ""
+            print(
+                f"[{run_id}] idle floor t_start={t_start:.6f} t_end={t_end:.6f} "
+                f"samples_in_window={n_in_window} window_energy_J={window_j:.2f}"
+            )
+        elif op in DISPATCH_OPERATORS:
+            row["idle_energy_J"] = ""
+            row["dispatch_energy_J"] = ""
+            print(
+                f"[{run_id}] dispatch baseline t_start={t_start:.6f} t_end={t_end:.6f} "
+                f"samples_in_window={n_in_window} window_energy_J={window_j:.2f}"
+            )
+        else:
+            row["idle_energy_J"] = f"{idle_mean_j:.6f}" if idle_mean_j is not None else ""
+            dispatch_j = dispatch_mean_j.get(engine)
+            row["dispatch_energy_J"] = f"{dispatch_j:.6f}" if dispatch_j is not None else ""
+            if dispatch_j is None and engine not in warned_dispatch_engines:
+                print(
+                    f"[WARN] no dispatch captures for engine={engine!r}; "
+                    "dispatch_energy_J left empty — secondary metric will be unsubtracted"
+                )
+                warned_dispatch_engines.add(engine)
+            print(
+                f"[{run_id}] t_start={t_start:.6f} t_end={t_end:.6f} "
+                f"samples_in_window={n_in_window} window_energy_J={window_j:.2f} "
+                f"idle_energy_J={idle_mean_j or 'n/a'} "
+                f"dispatch_energy_J={dispatch_j if dispatch_j is not None else 'n/a'}"
+            )
 
         if plot:
             png = save_plot(samples, t_start, t_end, run_id, PLOT_DIR)
             print(f"  plot -> {png}")
 
         enriched.append(row)
+
+    enriched = _dedup_rows(enriched)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as f:

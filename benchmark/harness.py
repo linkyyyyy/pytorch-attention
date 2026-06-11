@@ -15,6 +15,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,22 +23,28 @@ from typing import Any, Callable
 
 import numpy as np
 
+from npu import VaiPartition, ensure_xint8_model, make_npu_session
 from operators import (
     DISPATCH_BASELINE_PATH,
     OPSET,
     build_dispatch_baseline_graph,
     build_operator_graph,
+    fusion_member_csv,
     get_entry,
+    measure_context_from_profile,
 )
 
 BENCHMARK_DIR = Path(__file__).parent
 RESULTS_DIR = BENCHMARK_DIR / "results"
+PARTITIONS_DIR = RESULTS_DIR / "partitions"
 DEFAULT_OUTFILE = RESULTS_DIR / "runs.csv"
 METADATA_PATH = RESULTS_DIR / "metadata.json"
+VAIP_CACHE_DIR = BENCHMARK_DIR / ".vaip_cache"
 
 INTRA_OP_NUM_THREADS = 12
 GRAPH_OPTIMIZATION_LEVEL_NAME = "ORT_ENABLE_ALL"
 COOLDOWN_S = 5.0
+IDLE_SLEEP_S = 0.001  # window body: tight sleep loop for full warmup/window duration
 
 # None = not probed yet; set by probe_dml_ortvalue() on first iGPU session.
 _DML_ORTVALUE_AVAILABLE: bool | None = None
@@ -49,6 +56,7 @@ CSV_HEADER = [
     "tier",
     "block_id",
     "shape_class",
+    "fusion_member",
     "engine",
     "device_id",
     "shape_index",
@@ -84,6 +92,7 @@ CSV_EXAMPLE_ROWS: list[dict[str, Any]] = [
         "tier": "isolated",
         "block_id": "vit_avg",
         "shape_class": "avg",
+        "fusion_member": "True",
         "engine": "cpu",
         "device_id": 0,
         "shape_index": 0,
@@ -116,6 +125,7 @@ CSV_EXAMPLE_ROWS: list[dict[str, Any]] = [
         "tier": "fused_block",
         "block_id": "vit_avg",
         "shape_class": "avg",
+        "fusion_member": "True",
         "engine": "igpu",
         "device_id": 0,
         "shape_index": 0,
@@ -148,6 +158,7 @@ CSV_EXAMPLE_ROWS: list[dict[str, Any]] = [
         "tier": "n/a",
         "block_id": "n/a",
         "shape_class": "n/a",
+        "fusion_member": "n/a",
         "engine": "igpu",
         "device_id": 0,
         "shape_index": -1,
@@ -180,6 +191,7 @@ CSV_EXAMPLE_ROWS: list[dict[str, Any]] = [
         "tier": "n/a",
         "block_id": "n/a",
         "shape_class": "n/a",
+        "fusion_member": "n/a",
         "engine": "cpu",
         "device_id": 0,
         "shape_index": -1,
@@ -225,6 +237,11 @@ CSV_SCHEMA_DOC: dict[str, Any] = {
             "allowed_measure": ["small", "avg", "large", ""],
             "allowed_baseline": ["n/a"],
         },
+        "fusion_member": {
+            "description": "Whether row counts toward Tier-1-vs-Tier-2 fusion gap (attention-core ops).",
+            "allowed_measure": ["True", "False"],
+            "allowed_baseline": ["n/a"],
+        },
     },
     "example_rows": CSV_EXAMPLE_ROWS,
 }
@@ -232,6 +249,31 @@ CSV_SCHEMA_DOC: dict[str, Any] = {
 
 def _igpu_vgm_mb() -> str:
     return os.environ.get("BENCHMARK_IGPU_VGM_MB", "512")
+
+
+def _strip_repeat_suffix(run_id_base: str) -> str:
+    """Guard against double _rN suffix when caller passes a full run_id as --run-id."""
+    m = re.match(r"^(.+)_r(\d+)$", run_id_base.strip())
+    return m.group(1) if m else run_id_base.strip()
+
+
+def resolve_run_id(run_id_base: str, repeat_idx: int) -> str:
+    """Harness owns repeat suffixing: base + exactly one _r{repeat_idx}."""
+    return f"{_strip_repeat_suffix(run_id_base)}_r{repeat_idx}"
+
+
+def _npu_cache_key(operator: str, shape_index: int, mode: str) -> str:
+    if mode == "dispatch":
+        return "dispatch_baseline"
+    return f"{operator}_s{shape_index}"
+
+
+def _write_partition_sidecar(run_id: str, partition: VaiPartition) -> None:
+    PARTITIONS_DIR.mkdir(parents=True, exist_ok=True)
+    path = PARTITIONS_DIR / f"{run_id}.json"
+    payload = {"run_id": run_id, **partition.to_dict()}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"[vai] partition sidecar -> {path}")
 
 
 def _ensure_dispatch_baseline() -> Path:
@@ -422,14 +464,16 @@ def _run_inference_iteration(
     io_binding: Any | None,
     feeds: dict[str, np.ndarray] | None,
     output_names: list[str] | None,
+    engine: str = "cpu",
 ) -> None:
     if use_iobinding:
         assert io_binding is not None
         sess.run_with_iobinding(io_binding)
-        io_binding.synchronize_outputs()  # 1 iteration = 1 completed GPU execution
+        if engine == "igpu":
+            io_binding.synchronize_outputs()  # DirectML/iGPU only — not NPU
     else:
         assert feeds is not None and output_names is not None
-        sess.run(output_names, feeds)
+        sess.run(output_names, feeds)  # VAI EP: synchronous, blocks until NPU finishes
 
 
 def _run_profile_check(
@@ -450,6 +494,7 @@ def _run_profile_check(
         io_binding=io_binding,
         feeds=feeds,
         output_names=output_names,
+        engine=engine,
     )
     return _check_ep_placement(sess_profile, engine)
 
@@ -487,6 +532,7 @@ def _run_repeat(
     tier: str,
     block_id: str,
     shape_class: str,
+    fusion_member: str,
     engine: str,
     device_id: int,
     shape_index: int,
@@ -506,7 +552,7 @@ def _run_repeat(
 ) -> None:
     def execute() -> None:
         if mode == "idle":
-            time.sleep(0.001)
+            time.sleep(IDLE_SLEEP_S)  # full window = many sleeps via _duration_loop (no ORT)
         else:
             assert sess is not None
             _run_inference_iteration(
@@ -515,6 +561,7 @@ def _run_repeat(
                 io_binding=io_binding,
                 feeds=feeds,
                 output_names=output_names,
+                engine=engine,
             )
 
     print(
@@ -539,7 +586,10 @@ def _run_repeat(
         f"iterations={iterations} wall_time_s={wall_time_s:.6f}"
     )
 
-    mean_latency_ms = (wall_time_s / iterations * 1000.0) if iterations else float("nan")
+    if mode == "idle":
+        mean_latency_ms: float | str = ""
+    else:
+        mean_latency_ms = (wall_time_s / iterations * 1000.0) if iterations else float("nan")
 
     notes_parts = [
         f"threads={INTRA_OP_NUM_THREADS}",
@@ -558,6 +608,7 @@ def _run_repeat(
             "tier": tier,
             "block_id": block_id,
             "shape_class": shape_class,
+            "fusion_member": fusion_member,
             "engine": engine,
             "device_id": device_id,
             "shape_index": shape_index,
@@ -574,7 +625,9 @@ def _run_repeat(
             "wall_time_s": f"{wall_time_s:.6f}",
             "t_start_epoch": f"{t_start:.6f}",
             "t_end_epoch": f"{t_end:.6f}",
-            "mean_latency_ms": f"{mean_latency_ms:.6f}",
+            "mean_latency_ms": (
+                "" if mean_latency_ms == "" else f"{float(mean_latency_ms):.6f}"
+            ),
             "idle_power_w": "",
             "active_power_w": "",
             "window_energy_J": "",
@@ -586,8 +639,29 @@ def _run_repeat(
     )
 
 
+def _prep_npu_quantize_only(args: argparse.Namespace) -> None:
+    """Offline XINT8 quantize for one graph; no session, no measured window."""
+    if args.mode == "measure":
+        onnx_path, meta, _ = build_operator_graph(args.operator, args.shape_index)
+        label = args.operator
+    elif args.mode == "dispatch":
+        onnx_path = _ensure_dispatch_baseline()
+        meta = {"feeds": {"input": np.array([0.5], dtype=np.float32)}}
+        label = "dispatch_baseline"
+    else:
+        raise SystemExit("--prep-npu-quantize requires --mode measure or dispatch")
+
+    int8_path = ensure_xint8_model(onnx_path, meta["feeds"], force=args.force_requantize)
+    print(f"[prep] {label} -> {int8_path}")
+
+
 def run_harness(args: argparse.Namespace) -> None:
     _write_metadata_once()
+
+    if args.prep_npu_quantize:
+        _prep_npu_quantize_only(args)
+        return
+
     outfile = Path(args.outfile)
 
     csv_opset: int | str = OPSET
@@ -618,19 +692,31 @@ def run_harness(args: argparse.Namespace) -> None:
         dtype = "n/a"
         csv_opset = "n/a"
 
+    if args.engine == "npu" and args.mode in ("measure", "dispatch"):
+        dtype = "xint8"
+
     if args.mode == "measure":
-        tier = args.tier
-        block_id = args.block_id
-        shape_class = args.shape_class
+        tier, block_id, shape_class = measure_context_from_profile(
+            profile,
+            tier=args.tier,
+            block_id=args.block_id,
+            shape_class=args.shape_class,
+        )
+        fusion_member = fusion_member_csv(profile, entry)
     else:
         tier = "n/a"
         block_id = "n/a"
         shape_class = "n/a"
+        fusion_member = "n/a"
 
-    base_run_id = args.run_id or f"{operator}_{args.engine}"
+    base_run_id = args.run_id or (
+        f"{operator}_{args.engine}"
+        if args.mode != "idle"
+        else f"idle_{args.engine}"
+    )
 
     for repeat_idx in range(args.repeats):
-        run_id = f"{base_run_id}_r{repeat_idx}"
+        run_id = resolve_run_id(base_run_id, repeat_idx)
         sess = None
         io_binding = None
         ep_note = ""
@@ -638,30 +724,58 @@ def run_harness(args: argparse.Namespace) -> None:
         output_names = meta["output_names"] if meta else None
 
         if args.mode != "idle":
-            if repeat_idx == 0:
-                ep_note = _run_profile_check(
+            if args.engine == "npu":
+                assert onnx_path is not None and feeds is not None
+                int8_path = ensure_xint8_model(onnx_path, feeds)
+                cache_key = _npu_cache_key(
+                    operator,
+                    args.shape_index if args.mode == "measure" else -1,
+                    args.mode,
+                )
+                sess, partition = make_npu_session(
+                    int8_path,
+                    cache_key,
+                    cache_dir=VAIP_CACHE_DIR,
+                    intra_op_num_threads=INTRA_OP_NUM_THREADS,
+                )
+                if repeat_idx == 0 and partition is not None:
+                    ep_note = partition.summary()
+                    _write_partition_sidecar(run_id, partition)
+                    print(f"[EP_CHECK] run_id={run_id} {ep_note}")
+                elif repeat_idx == 0:
+                    ep_note = "VAI_PARTITION: not captured in compile log"
+                    print(f"[EP_CHECK] run_id={run_id} {ep_note}")
+                use_iobinding = False
+                io_binding = None
+                print(
+                    f"[MEASURE_SESSION] run_id={run_id} int8={int8_path.name} "
+                    f"providers={sess.get_providers()}"
+                )
+            else:
+                if repeat_idx == 0:
+                    ep_note = _run_profile_check(
+                        onnx_path,
+                        args.engine,
+                        args.device_id,
+                        feeds,
+                        output_names,
+                    )
+                    print(f"[EP_CHECK] run_id={run_id} {ep_note}")
+
+                sess = _create_session(
                     onnx_path,
                     args.engine,
                     args.device_id,
-                    feeds,
-                    output_names,
+                    enable_profiling=False,
                 )
-                print(f"[EP_CHECK] run_id={run_id} {ep_note}")
-
-            sess = _create_session(
-                onnx_path,
-                args.engine,
-                args.device_id,
-                enable_profiling=False,
-            )
-            print(f"[MEASURE_SESSION] run_id={run_id} providers={sess.get_providers()}")
-            use_iobinding = args.engine != "igpu" or igpu_use_iobinding(args.device_id)
-            io_binding = _create_io_binding(
-                sess, feeds, output_names, args.engine, args.device_id
-            )
-            if args.engine == "igpu":
-                path = "iobinding+dml" if use_iobinding else "sess.run(feeds)"
-                print(f"[DML_IO] run_id={run_id} inference path={path}")
+                print(f"[MEASURE_SESSION] run_id={run_id} providers={sess.get_providers()}")
+                use_iobinding = args.engine != "igpu" or igpu_use_iobinding(args.device_id)
+                io_binding = _create_io_binding(
+                    sess, feeds, output_names, args.engine, args.device_id
+                )
+                if args.engine == "igpu":
+                    path = "iobinding+dml" if use_iobinding else "sess.run(feeds)"
+                    print(f"[DML_IO] run_id={run_id} inference path={path}")
         else:
             use_iobinding = False
 
@@ -673,6 +787,7 @@ def run_harness(args: argparse.Namespace) -> None:
             tier=tier,
             block_id=block_id,
             shape_class=shape_class,
+            fusion_member=fusion_member,
             engine=args.engine,
             device_id=args.device_id,
             shape_index=args.shape_index if args.mode == "measure" else -1,
@@ -699,7 +814,7 @@ def run_harness(args: argparse.Namespace) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Operator energy measurement harness")
     parser.add_argument("--operator", default="", help="Registry operator name (measure mode)")
-    parser.add_argument("--engine", required=True, choices=["cpu", "igpu"])
+    parser.add_argument("--engine", required=True, choices=["cpu", "igpu", "npu"])
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--warmup", type=float, default=5.0)
     parser.add_argument("--repeats", type=int, default=5)
@@ -725,7 +840,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--outfile", default=str(DEFAULT_OUTFILE))
     parser.add_argument("--run-id", default="", help="Run id prefix (set by run_sweep.bat)")
+    parser.add_argument(
+        "--prep-npu-quantize",
+        action="store_true",
+        help="Offline Quark XINT8 quantize only (no session, no measured window)",
+    )
+    parser.add_argument(
+        "--force-requantize",
+        action="store_true",
+        help="Re-run Quark even if _xint8.onnx exists",
+    )
     args = parser.parse_args(argv)
+
+    if args.prep_npu_quantize and args.engine != "npu":
+        parser.error("--prep-npu-quantize requires --engine npu")
 
     if args.mode == "measure":
         if not args.operator:

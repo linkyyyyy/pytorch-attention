@@ -29,6 +29,8 @@ class OperatorEntry:
     shape_profiles: list[dict[str, Any]]
     dtype: str
     cluster: str
+    # Default when shape profile has no fusion_member key (non-block ops). Per-block via profile later.
+    fusion_member: bool = False
 
 
 @dataclass(frozen=True)
@@ -252,6 +254,10 @@ def _onnx_path(name: str, shape_index: int) -> Path:
     if shape_index == 0:
         return ONNX_GRAPHS_DIR / f"{name}.onnx"
     return ONNX_GRAPHS_DIR / f"{name}_s{shape_index}.onnx"
+
+
+def xint8_onnx_path(fp32_path: Path) -> Path:
+    return fp32_path.with_name(f"{fp32_path.stem}_xint8.onnx")
 
 
 def export_torch_module(
@@ -838,6 +844,158 @@ def get_entry(name: str) -> OperatorEntry:
     return OPERATOR_REGISTRY[name]
 
 
+def profile_indices_for_corner(name: str, shape_class: str = "avg") -> list[int]:
+    """
+    shape_index values for one DSE corner (e.g. avg / N=197).
+    Single-profile ops (conv/pool) always return [0]. Multi-profile SDPA ops return all
+    matching profiles (q/k/v, ffn expand/contract, etc.).
+    """
+    entry = get_entry(name)
+    matched = [
+        i
+        for i, profile in enumerate(entry.shape_profiles)
+        if profile.get("shape_class") == shape_class
+    ]
+    if matched:
+        return matched
+    if len(entry.shape_profiles) == 1:
+        return [0]
+    return []
+
+
+def fusion_member_csv(profile: dict[str, Any], entry: OperatorEntry) -> str:
+    """CSV fusion_member cell from profile (preferred) or operator entry default."""
+    if "fusion_member" in profile:
+        return str(bool(profile["fusion_member"]))
+    return str(entry.fusion_member)
+
+
+def measure_context_from_profile(
+    profile: dict[str, Any],
+    *,
+    tier: str,
+    block_id: str,
+    shape_class: str,
+) -> tuple[str, str, str]:
+    """CLI args override profile; profile fills block-scoped fields when CLI empty."""
+    return (
+        tier if tier != "isolated" else profile.get("tier", tier),
+        block_id if block_id else profile.get("block_id", ""),
+        shape_class if shape_class else profile.get("shape_class", ""),
+    )
+
+
+# Default measure set for run_session.bat / run_sweep.bat (attn_block_fused: skip npu in plan).
+SESSION_MEASURE_OPERATORS: tuple[str, ...] = (
+    "patch_embed_conv2d",
+    "downsample_conv2d",
+    "ffn_gemm",
+    "gelu",
+    "layer_norm",
+    "group_norm",
+    "batch_norm",
+    "residual_add",
+    "qkv_proj_gemm",
+    "attn_score_matmul",
+    "xcit_cov_matmul",
+    "softmax",
+    "attn_value_matmul",
+    "out_proj_gemm",
+    "sra_conv2d",
+    "avg_pool_token_mixer",
+    "depthwise_conv2d",
+    "attn_block_fused",
+)
+
+# Engines to skip per operator (known EP issues); generalizes to per-engine later.
+SWEEP_SKIP_ENGINES: dict[str, frozenset[str]] = {
+    "attn_block_fused": frozenset({"npu"}),
+}
+
+
+@dataclass(frozen=True)
+class SweepPlanRow:
+    operator: str
+    shape_index: int
+    block_id: str
+    shape_class: str
+    tier: str
+    fusion_member: str
+    input_shape: str
+    skip_engines: str
+
+
+def build_sweep_plan(
+    operators: Iterable[str],
+    *,
+    shape_class: str = "avg",
+) -> list[SweepPlanRow]:
+    rows: list[SweepPlanRow] = []
+    for name in operators:
+        indices = profile_indices_for_corner(name, shape_class)
+        if not indices:
+            print(
+                f"[WARN] skip {name}: no shape_class={shape_class!r} profile "
+                f"(profiles={len(get_entry(name).shape_profiles)})"
+            )
+            continue
+        entry = get_entry(name)
+        skip = ",".join(sorted(SWEEP_SKIP_ENGINES.get(name, frozenset())))
+        for idx in indices:
+            profile = entry.shape_profiles[idx]
+            tier, block_id, corner = measure_context_from_profile(
+                profile,
+                tier="isolated",
+                block_id="",
+                shape_class="",
+            )
+            rows.append(
+                SweepPlanRow(
+                    operator=name,
+                    shape_index=idx,
+                    block_id=block_id,
+                    shape_class=corner,
+                    tier=tier,
+                    fusion_member=fusion_member_csv(profile, entry),
+                    input_shape=profile["input_shape"],
+                    skip_engines=skip,
+                )
+            )
+    return rows
+
+
+def print_sweep_plan(
+    plan: list[SweepPlanRow],
+    engines: Iterable[str],
+) -> None:
+    print("operator|engine|shape_index|input_shape|block_id|shape_class|tier|fusion_member|status")
+    for row in plan:
+        for engine in engines:
+            if engine in {e.strip() for e in row.skip_engines.split(",") if e.strip()}:
+                print(
+                    f"{row.operator}|{engine}|{row.shape_index}|{row.input_shape}|"
+                    f"{row.block_id}|{row.shape_class}|{row.tier}|{row.fusion_member}|SKIP"
+                )
+            else:
+                print(
+                    f"{row.operator}|{engine}|{row.shape_index}|{row.input_shape}|"
+                    f"{row.block_id}|{row.shape_class}|{row.tier}|{row.fusion_member}|RUN"
+                )
+
+
+def write_sweep_plan(path: Path, plan: list[SweepPlanRow]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        f.write(
+            "operator|shape_index|block_id|shape_class|tier|fusion_member|input_shape|skip_engines\n"
+        )
+        for row in plan:
+            f.write(
+                f"{row.operator}|{row.shape_index}|{row.block_id}|{row.shape_class}|"
+                f"{row.tier}|{row.fusion_member}|{row.input_shape}|{row.skip_engines}\n"
+            )
+
+
 def get_shape_profile(name: str, shape_index: int) -> dict[str, Any]:
     entry = get_entry(name)
     if shape_index < 0 or shape_index >= len(entry.shape_profiles):
@@ -879,8 +1037,69 @@ def export_all_graphs(all_shapes: bool = False) -> None:
     print(f"  exported {DISPATCH_BASELINE_PATH.name} (Add input+constant)")
 
 
+def quantize_all_xint8(all_shapes: bool = False) -> None:
+    """Offline NPU prep: quantize every exported FP32 graph to XINT8 (not timed)."""
+    from npu import ensure_xint8_model
+
+    ONNX_GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
+    for name, entry in OPERATOR_REGISTRY.items():
+        shape_indices = range(len(entry.shape_profiles)) if all_shapes else [0]
+        for idx in shape_indices:
+            fp32_path, meta, _ = build_operator_graph(name, idx)
+            ensure_xint8_model(fp32_path, meta["feeds"])
+            print(f"  xint8 {xint8_onnx_path(fp32_path).name}")
+
+    dispatch_meta = build_dispatch_baseline_graph(DISPATCH_BASELINE_PATH, OPSET)
+    ensure_xint8_model(DISPATCH_BASELINE_PATH, dispatch_meta["feeds"])
+    print(f"  xint8 {xint8_onnx_path(DISPATCH_BASELINE_PATH).name}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export operator ONNX graphs")
     parser.add_argument("--all-shapes", action="store_true", help="Export every shape profile")
+    parser.add_argument(
+        "--quantize-xint8-all",
+        action="store_true",
+        help="Offline NPU prep: Quark XINT8 quantize all FP32 graphs (no measurement)",
+    )
+    parser.add_argument(
+        "--sweep-plan",
+        action="store_true",
+        help="Print/write production sweep matrix for one DSE corner; no export/measure",
+    )
+    parser.add_argument(
+        "--corner",
+        default="avg",
+        choices=["small", "avg", "large"],
+        help="DSE corner for --sweep-plan (default: avg / N=197)",
+    )
+    parser.add_argument(
+        "--plan-out",
+        type=Path,
+        default=ONNX_GRAPHS_DIR.parent / "results" / "sweep_plan.csv",
+        help="Pipe-delimited plan file for run_session.bat / run_sweep.bat",
+    )
+    parser.add_argument(
+        "--engines",
+        default="cpu,igpu,npu",
+        help="Comma-separated engines to expand in plan preview",
+    )
+    parser.add_argument(
+        "--operators",
+        nargs="*",
+        default=None,
+        help="Operators for --sweep-plan (default: SESSION_MEASURE_OPERATORS)",
+    )
     args = parser.parse_args()
-    export_all_graphs(all_shapes=args.all_shapes)
+    if args.sweep_plan:
+        ops = tuple(args.operators) if args.operators else SESSION_MEASURE_OPERATORS
+        plan = build_sweep_plan(ops, shape_class=args.corner)
+        engines = [e.strip() for e in args.engines.split(",") if e.strip()]
+        print(f"[sweep-plan] corner={args.corner} operators={len(ops)} plan_rows={len(plan)}")
+        print_sweep_plan(plan, engines)
+        write_sweep_plan(args.plan_out, plan)
+        print(f"[sweep-plan] wrote {args.plan_out}")
+    elif args.quantize_xint8_all:
+        quantize_all_xint8(all_shapes=args.all_shapes)
+    else:
+        export_all_graphs(all_shapes=args.all_shapes)

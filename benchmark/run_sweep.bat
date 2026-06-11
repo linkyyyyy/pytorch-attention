@@ -1,111 +1,81 @@
-@echo off
-setlocal EnableDelayedExpansion
-
-REM ============================================================================
-REM run_sweep.bat — Operator energy sweep orchestrator
-REM
-REM uProf measures energy; harness.py drives the marked measurement window.
-REM Analysis formula (post-uProf alignment):
-REM   energy_per_op = (window_energy - dispatch_energy) / iterations
-REM Idle baseline captures the static floor separately.
-REM ============================================================================
-
-call conda activate ryzen-ai-1.6.0
-if errorlevel 1 (
-    echo [FAIL] Could not activate conda environment ryzen-ai-1.6.0
-    exit /b 1
-)
-
-cd /d "%~dp0"
-
-REM --- Configuration (edit IGPU_VGM_MB to match BIOS Variable Graphics Memory) ---
-set DURATION=30
-set WARMUP=5
-set REPEATS=5
-set DEVICE_ID=0
-set OUTFILE=results\runs.csv
-set UPROF_CLI=AMDuProfCLI.exe
-set IGPU_VGM_MB=512
-set BENCHMARK_IGPU_VGM_MB=%IGPU_VGM_MB%
-
-REM --- ONE locale-safe session timestamp (never use %%date%%%%time%% in filenames) ---
-for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set SESSION_TS=%%T
-set UPROF_SESSION_DIR=results\uprof\%SESSION_TS%
-
-echo [SESSION] timestamp=%SESSION_TS%
-echo [SESSION] uProf output dir=%UPROF_SESSION_DIR%
-
-if not exist results mkdir results
-if not exist results\uprof mkdir results\uprof
-if not exist "%UPROF_SESSION_DIR%" mkdir "%UPROF_SESSION_DIR%"
-if errorlevel 1 (
-    echo [FAIL] Could not create uProf session directory: %UPROF_SESSION_DIR%
-    exit /b 1
-)
-
-REM ============================================================================
-REM TODO: UPROF FLAGS — DO NOT GUESS
-REM On the HX 370 tower, run:
-REM   AMDuProfCLI.exe timechart --help
-REM   AMDuProfCLI.exe --help
-REM Verify child-launch syntax (standard trailing args: ... -- python harness.py ...)
-REM and fill in the timechart flags below.
-REM ============================================================================
-REM TIMESTAMP ALIGNMENT (confirmed — conversion required; do NOT align directly):
-REM   uProf timechart.csv = wall-clock HH:MM:SS:ms (local tz)
-REM   harness WINDOW_OPEN/CLOSE = Unix epoch seconds (time.time())
-REM   Preferred: parse uProf string + session date + Europe/Athens tz -> epoch; math in epoch.
-REM   Avoid epoch->time-of-day primary (no date on uProf strings; midnight/DST risk).
-REM TODO (parser): build alignment function for log-parsing step (see metadata.json todo_alignment_parser).
-REM TODO (robust anchor): before each uProf wrap, log Profile Start Time / epoch at launch
-REM   (e.g. echo epoch to session log) so uProf and harness traces share one reference.
-REM ============================================================================
-
-set OPERATORS=patch_embed_conv2d downsample_conv2d ffn_gemm gelu layer_norm group_norm batch_norm residual_add qkv_proj_gemm attn_score_matmul xcit_cov_matmul softmax attn_value_matmul sra_conv2d avg_pool_token_mixer depthwise_conv2d
-set ENGINES=cpu igpu
-
-echo [SWEEP] starting operator x engine x repeat sweep
-echo [SWEEP] operators=%OPERATORS%
-echo [SWEEP] engines=%ENGINES% repeats=%REPEATS% duration=%DURATION%s warmup=%WARMUP%s
-
-set /a LAST_R=%REPEATS% - 1
-
-for %%O in (%OPERATORS%) do (
-    for %%E in (%ENGINES%) do (
-        for /L %%R in (0,1,!LAST_R!) do (
-            set RUN_ID=%%O_%%E_r%%R
-            echo.
-            echo [RUN] !RUN_ID! session=%SESSION_TS%
-
-            REM uProf parent-wrap: harness runs as child of AMDuProfCLI.
-            REM TODO: insert verified timechart flags (from AMDuProfCLI timechart --help) before --output. Should be resolved now
-            %UPROF_CLI% timechart --event power --interval 100 --output "%UPROF_SESSION_DIR%\!RUN_ID!.csv" "C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\python.exe" harness.py --operator %%O --engine %%E --duration %DURATION% --warmup %WARMUP% --repeats 1 --device-id %DEVICE_ID% --mode measure --shape-index 0 --run-id !RUN_ID! --outfile %OUTFILE%
-
-            if errorlevel 1 (
-                echo [WARN] run !RUN_ID! returned non-zero exit code
-            )
-
-            timeout /t 5 /nobreak >nul
-        )
-    )
-)
-
-echo.
-echo [SWEEP] complete. Session uProf dir: %UPROF_SESSION_DIR%
-echo [SWEEP] CSV: %OUTFILE%
-echo.
-echo --- Baseline templates (uncomment and run once per engine per session) ---
-echo.
-echo REM Idle baseline - CPU (static floor):
-echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\idle_cpu_r0.csv" -- python harness.py --mode idle --engine cpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id idle_cpu_r0 --outfile %OUTFILE%
-echo.
-echo REM Idle baseline - iGPU (static floor):
-echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\idle_igpu_r0.csv" -- python harness.py --mode idle --engine igpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id idle_igpu_r0 --outfile %OUTFILE%
-echo.
-echo REM Dispatch baseline - CPU (launch overhead; non-elidable Add graph):
-echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\dispatch_cpu_r0.csv" -- python harness.py --mode dispatch --engine cpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id dispatch_cpu_r0 --outfile %OUTFILE%
-echo.
-echo REM Dispatch baseline - iGPU (launch overhead; non-elidable Add graph):
-echo %UPROF_CLI% timechart ... --output "%UPROF_SESSION_DIR%\dispatch_igpu_r0.csv" -- python harness.py --mode dispatch --engine igpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id dispatch_igpu_r0 --outfile %OUTFILE%
-
-endlocal
+@echo off
+setlocal EnableDelayedExpansion
+
+REM ============================================================================
+REM run_sweep.bat — Operator x engine sweep (registry-driven avg corner)
+REM Standard window: 5 s warmup, 30 s measured loop, 5 repeats per harness call
+REM ============================================================================
+
+call conda activate ryzen-ai-1.6.0
+if errorlevel 1 (
+    echo [FAIL] Could not activate conda environment ryzen-ai-1.6.0
+    exit /b 1
+)
+
+cd /d "%~dp0"
+
+set PY=C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\python.exe
+set DURATION=30
+set WARMUP=5
+set REPEATS=5
+set DEVICE_ID=0
+set CORNER=avg
+set ENGINES=cpu igpu npu
+set OUTFILE=results\runs.csv
+set UPROF_CLI=AMDuProfCLI.exe
+set IGPU_VGM_MB=512
+set BENCHMARK_IGPU_VGM_MB=%IGPU_VGM_MB%
+
+for /f %%T in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set SESSION_TS=%%T
+set UPROF_SESSION_DIR=results\uprof\%SESSION_TS%
+set PLAN=results\sweep_plan_%SESSION_TS%.csv
+
+echo [SESSION] timestamp=%SESSION_TS%
+echo [SESSION] uProf output dir=%UPROF_SESSION_DIR%
+
+if not exist results mkdir results
+if not exist results\uprof mkdir results\uprof
+if not exist "%UPROF_SESSION_DIR%" mkdir "%UPROF_SESSION_DIR%"
+
+echo.
+echo [PLAN] Generating run matrix from registry...
+%PY% operators.py --sweep-plan --corner %CORNER% --plan-out %PLAN%
+if errorlevel 1 exit /b 1
+
+echo.
+echo Review the plan above. Ctrl+C to abort, or press any key to start sweep...
+pause >nul
+
+echo [SWEEP] corner=%CORNER% engines=%ENGINES% repeats=%REPEATS% duration=%DURATION%s warmup=%WARMUP%s
+
+for /f "usebackq skip=1 tokens=1-8 delims=|" %%a in ("%PLAN%") do (
+    for %%E in (%ENGINES%) do (
+        echo.|findstr /C:"%%E" "%%h" >nul 2>&1
+        if not errorlevel 1 (
+            echo [SKIP] %%a shape_index=%%b engine=%%E ^(skip_engines=%%h^)
+        ) else (
+            set RUN_BASE=%%a_%%E_s%%b
+            echo.
+            echo [RUN] !RUN_BASE! repeats=%REPEATS% session=%SESSION_TS%
+            %UPROF_CLI% timechart --event power --interval 100 -o "%UPROF_SESSION_DIR%\!RUN_BASE!" "%PY%" harness.py --operator %%a --engine %%E --duration %DURATION% --warmup %WARMUP% --repeats %REPEATS% --device-id %DEVICE_ID% --mode measure --shape-index %%b --tier %%e --block-id %%c --shape-class %%d --run-id !RUN_BASE! --outfile %OUTFILE%
+            if errorlevel 1 (
+                echo [WARN] run !RUN_BASE! returned non-zero exit code
+            )
+            timeout /t 5 /nobreak >nul
+        )
+    )
+)
+
+echo.
+echo [SWEEP] complete. Session uProf dir: %UPROF_SESSION_DIR%
+echo [SWEEP] CSV: %OUTFILE%
+echo.
+echo --- Baselines: run once per session before or after sweep (see run_session.bat) ---
+echo %UPROF_CLI% timechart --event power --interval 100 -o "%UPROF_SESSION_DIR%\idle_cpu" "%PY%" harness.py --mode idle --engine cpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id idle_cpu --outfile %OUTFILE%
+echo %UPROF_CLI% timechart --event power --interval 100 -o "%UPROF_SESSION_DIR%\dispatch_baseline_cpu" "%PY%" harness.py --mode dispatch --engine cpu --duration %DURATION% --warmup %WARMUP% --repeats 1 --run-id dispatch_baseline_cpu --outfile %OUTFILE%
+echo --- Post-process ---
+echo %PY% parse_energy.py --runs %OUTFILE% --uprof-dir %UPROF_SESSION_DIR% --plot
+echo %PY% analysis.py --runs results\runs_enriched.csv
+
+endlocal
+

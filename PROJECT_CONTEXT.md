@@ -69,9 +69,9 @@ iGPU or NPU power counters exist on this platform.
   - `block_id` — SDPA corner id: `sdpa_small`, `sdpa_avg`, `sdpa_large`; empty when not
     block-scoped; `n/a` for baselines.
   - `shape_class` — DSE corner: `small`, `avg`, or `large`; empty when unspecified; `n/a` for baselines.
-  - `fusion_member` — `True` / `False` (bool). Marks whether a row counts toward the Tier-1-vs-Tier-2
-    fusion gap (see §4 SDPA fusion-gap microbenchmark). Harness may not write this column yet — profiles
-    in `operators.py` carry the tag; confirm it lands in `runs.csv` before analysis.
+  - `fusion_member` — `True` / `False` / `n/a` (baselines). Harness writes from `operators.py` registry
+    shape profiles (attention-core ops = `True`; LN/FFN/residual context = `False`; single-profile conv
+    ops = entry default `False`). Generalizes to per-block via profile tags later.
   Allowed values and example rows: `benchmark/results/metadata.json` → `csv_schema`.
   **Conda env (all tower work):** `ryzen-ai-1.6.0`.
 - **Robust anchor (TODO):** capture uProf `Profile Start Time` and/or log epoch at `AMDuProfCLI`
@@ -80,8 +80,20 @@ iGPU or NPU power counters exist on this platform.
 
 **Individual iGPU or NPU rail isolation is unavailable** on the HX 370: CPU, Radeon 890M iGPU,
 and XDNA NPU share the same die and power delivery. All energy figures are **package-level power
-during engine execution**, isolated via baseline subtraction (idle + dispatch), not a dedicated
-engine rail.
+during engine execution**, isolated via baseline subtraction, not a dedicated engine rail.
+
+**Headline metric (cross-engine):** `energy_per_op_J = (window_energy_J − idle_energy_J) /
+iterations`. Idle is a **common host floor** — same timed window as measure/dispatch, no ORT work
+(sleep loop only); `--engine` on idle runs is metadata only. Package-level uProf has no per-rail
+counter, so marginal energy above the shared idle floor is the defensible cross-engine comparison.
+
+**Secondary metric (per-engine kernel attribution):** `energy_per_op_dispatch = (window_energy_J −
+dispatch_energy_J) / iterations`. **Caveat:** NPU dispatch baseline runs CPU-only (not
+dispatch-isolated on NPU).
+
+`window_energy_J` stays **RAW** upstream (`WINDOW_ENERGY_IS_RAW=True`); all subtraction is in
+`analysis.py`. Harness appends `_r{repeat_idx}` to base `--run-id` exactly once (strips trailing
+`_r\d+` if caller already included it).
 
 Per-engine comparison relies on **controlled execution** (one ORT execution provider per run) and
 **baseline subtraction**, not separate hardware power rails. State this explicitly in the paper
@@ -440,7 +452,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   | `benchmark/BENCHMARK_WORKFLOW.md` | User-facing CMD workflow guide (prerequisites, export, smoke test, baselines, sweep, troubleshooting) |
   | `benchmark/IMPLEMENTATION_BLUEPRINT.md` | Design spec: registry schema, harness CLI, dispatch baseline rationale, CSV schema, uProf parent-wrap pattern, locked defaults |
   | `benchmark/onnx_graphs/` | 16 pre-exported `.onnx` operator graphs (+ `dispatch_baseline.onnx`) for Netron inspection and ORT sessions |
-  | `benchmark/parse_energy.py` | Post-process uProf timechart CSVs + `runs.csv` → per-operator energy (J/op); `--test-toy` + `--plot` |
+  | `benchmark/parse_energy.py` | Join uProf timechart + `runs.csv` → `runs_enriched.csv` (`window_energy_J`, `idle_energy_J`, `dispatch_energy_J`); `--test-toy` + `--plot` |
   | `benchmark/results/` | Empty placeholder — `runs.csv` and `uprof/<SESSION_TS>/` populate during measurement |
   | `directives/measurement_harness_spec.md` | Protocol spec: measurement philosophy, session options, loop structure, baselines, uProf integration, CSV schema, validity checklist |
   | `directives/operator_architecture_selection.md` | Architecture & operator selection rationale (Opus-generated; authoritative cluster definitions) |
@@ -487,7 +499,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
   **Window bounds (design decision):** Option **(b)** — `harness.py` now writes `t_start_epoch` / `t_end_epoch` columns to `runs.csv` (alongside stdout `[WINDOW_OPEN]`/`[WINDOW_CLOSE]` markers). `parse_energy.py` reads these directly; falls back to per-run `.log` parsing if columns are absent (option (a) compatibility).
 
-  **`parse_energy.py`:** Deterministic post-processor — `parse_uprof_csv()`, trapezoidal `integrate_power()`, `energy_per_op()`; joins `runs.csv` to uProf CSVs by `run_id`; writes `results/runs_enriched.csv`. `--plot` saves per-run PNG with `t_start`/`t_end` vertical markers (requires `matplotlib`).
+  **`parse_energy.py`:** Deterministic post-processor — `parse_uprof_csv()`, trapezoidal `integrate_power()`; joins `runs.csv` to uProf CSVs by `run_id`; fills `window_energy_J`, joins `idle_energy_J` (common floor by `repeat_idx`) and `dispatch_energy_J` (per engine); dedups baseline rows. Subtraction stays in `analysis.py`. `--plot` saves per-run PNG with `t_start`/`t_end` vertical markers (requires `matplotlib`).
 
   **Toy verification (`toy_igpu`, `AMDuProf-python-Timechart_Jun-08-2026_16-36-25/timechart.csv`):**
   - Window: `t_start=1780925790.173200`, `t_end=1780925800.172677`, `iterations=13560`
@@ -510,6 +522,26 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
     harness / `parse_energy.py` actually writes raw vs dispatch-netted `window_energy_J` is
     **unconfirmed**. Verify against **one real uProf-joined row** before any full sweep analysis.
 
+- **2026-06-11 (NPU harness branch — code only, not measured yet):**
+  - **`benchmark/npu/`:** NPU package — `path.py` (Quark XINT8, `make_npu_session()`, partition capture), `gemm_validate.py` (standalone plumbing test). Run: `cd benchmark && python -m npu.gemm_validate`.
+  - **`harness.py`:** Third EP branch `--engine npu` reuses the **same** `_run_repeat` / `_duration_loop` path as CPU/iGPU. NPU supplies only: offline quantize → session (compile) → `sess.run()` (no `synchronize_outputs()`). Partition summary → `notes` + `results/partitions/{run_id}.json`. Q/DQ boundary CPU fallback recorded in notes.
+  - **`operators.py`:** `xint8_onnx_path()`; `python operators.py --quantize-xint8-all` for batch offline prep.
+  - **`run_sweep.bat`:** `ENGINES=cpu igpu npu`; capture idle + dispatch baselines per session. Pass base `--run-id` without `_r0` (harness suffixes repeats).
+  - **Validated plumbing (pre-harness):** `ffn_gemm` XINT8 → VitisAI EP, ops_NPU=11 / VITIS_EP_CPU=2, relative L2 ≈ 0.017 vs FP32 CPU (`benchmark/npu/gemm_validate.py`).
+  - **Cache rule:** delete `benchmark/.vaip_cache/` after NPU driver or VitisAI EP version change.
+  - **Calibration policy:** synthetic n=16 distribution-matched tensors per graph (operator energy, not task accuracy) — documented in `metadata.json` → `npu_path` section.
+
+- **2026-06-11 (fusion_member + registry-driven sweep plan):**
+  - **`harness.py`:** emits `fusion_member` column on measure rows (from profile / entry default).
+  - **`operators.py`:** `profile_indices_for_corner()`, `--sweep-plan --corner avg` prints/writes pipe-delimited plan; `SESSION_MEASURE_OPERATORS` + `SWEEP_SKIP_ENGINES` (attn_block_fused NPU).
+  - **`run_session.bat` / `run_sweep.bat`:** pre-launch plan matrix + pause; per-op `shape_index` from registry (avg corner: SDPA N=197; q/k/v all three; single-profile ops index 0); `[WARN]` skip when corner missing.
+  - **Known:** `attn_block_fused` NPU VAI EP crash (768 vs 3136 batch) — Tier-2 blocked on NPU; plumbing session `20260611_165420` needs post-process before trusting production sweep.
+
+- **2026-06-05 (idle headline + run-id hygiene):**
+  - **Idle:** `--mode idle` uses the same warmup/window timer as measure/dispatch (sleep loop body, no ORT). `parse_energy.py` joins idle uProf window → `idle_energy_J` on measure rows (by `repeat_idx`).
+  - **Headline:** `energy_per_op_J` = idle-subtracted in `analysis.py`; `energy_per_op_dispatch` retained as secondary (NPU dispatch CPU-fallback caveat).
+  - **Run-id:** harness `resolve_run_id()` appends `_r{repeat_idx}` once; strips trailing `_r\d+` from `--run-id`.
+
 - **Open — pending supervisor input (increasingly urgent):**
   - **Precision policy (§4 decision #2):** INT8-all engines vs native-best (FP32 CPU / FP16 iGPU / INT8 NPU). Unresolved; affects all cross-engine energy comparisons.
   - **PoolFormer vs PvT control pair** (architecture selection).
@@ -522,16 +554,17 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   1. **RAW vs NET convention** — does `window_energy_J` include dispatch overhead? Set
      `WINDOW_ENERGY_IS_RAW` in `analysis.py` to match; watch for `dispatch_energy_J > window_energy_J`
      warnings.
-  2. **`energy_per_op_J` positive and non-trivial** — not NaN, not ~0 (dispatch-dominated artifact).
-  3. **Sanity:** `energy_per_op_J × iterations_completed ≈ active package power × window_s` (order-of-magnitude).
+  2. **`energy_per_op_J` (idle-subtracted headline) positive and non-trivial** — not NaN, not ~0.
+  3. **Sanity:** `(window_energy_J − idle_energy_J) / iterations × iterations_completed ≈ marginal package energy over window`.
   4. **Iteration count in the thousands** — if suspiciously low, `synchronize_outputs()` on iGPU may have regressed.
-  5. **Exactly one dispatch baseline per engine** feeds subtraction (dedupe if duplicates; no double-count).
+  5. **Exactly one idle + one dispatch baseline per engine** (dedupe if duplicates; no double-count).
+  6. **Secondary:** `energy_per_op_dispatch` for per-engine view; treat NPU dispatch as CPU-fallback caveat.
 
   **After gate passes:**
   - Export all SDPA shapes: `python operators.py --all-shapes`
-  - SDPA sweep: isolated fusion_member ops + `attn_block_fused` × 3 corners × 2 engines × repeats
+  - SDPA sweep: isolated fusion_member ops + `attn_block_fused` × 3 corners × 3 engines × repeats
   - `parse_energy.py` → `analysis.py` → fusion-gap table per corner
-  - Idle + dispatch baselines under uProf if not already captured this session
+  - Idle (common floor) + dispatch baselines under uProf each session
   - Confirm BIOS VGM → `IGPU_VGM_MB` in `run_sweep.bat` / metadata
 
   **Deferred (not blocking SDPA sweep):** Track-2 real-mixer shape fixes (§4); Christoforos check-in;

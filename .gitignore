@@ -1,5 +1,6 @@
 # Regenerable benchmark artifacts (python operators.py)
 benchmark/onnx_graphs/*.onnx
+benchmark/.vaip_cache/
 
 # Runtime / local measurement output
 benchmark/onnxruntime_profile*.json

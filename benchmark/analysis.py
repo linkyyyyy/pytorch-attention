@@ -2,8 +2,12 @@
 analysis.py — Deterministic fusion-gap analysis (no AI/LLM).
 
 Consumes runs.csv (post-uProf enrichment) and reports:
-  (a) per-operator energy_per_op_J ± std
+  (a) per-operator energy_per_op_J ± std  (headline = idle-subtracted)
   (b) Tier-1 vs Tier-2 fusion gap per (engine, block_id)
+
+Headline: energy_per_op_J = (window_energy_J - idle_energy_J) / iterations  (cross-engine)
+Secondary: energy_per_op_dispatch = (window_energy_J - dispatch_energy_J) / iterations
+  (per-engine kernel attribution; NPU dispatch baseline is CPU-only — not dispatch-isolated)
 
 Pipeline stages are separate functions so each step is inspectable.
 """
@@ -28,8 +32,8 @@ DISPATCH_OPERATORS = frozenset({"dispatch_baseline", "dispatch"})
 SKIP_OPERATORS = frozenset({"idle"})
 
 # Confirm against one real uProf-joined runs.csv row before trusting production results.
-# True  → window_energy_J is gross (dispatch overhead still inside); subtract dispatch here.
-# False → window_energy_J is already net (harness/parse_energy removed dispatch); do NOT subtract again.
+# True  → window_energy_J is gross; subtract idle (headline) and dispatch (secondary) here.
+# False → window_energy_J is already net; do NOT subtract again.
 WINDOW_ENERGY_IS_RAW = True
 
 # shape_index disambiguates q_proj / k_proj / v_proj (same operator name, different profiles).
@@ -79,37 +83,51 @@ def _coerce_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
-def dispatch_baseline_per_engine(df: pd.DataFrame) -> pd.Series:
-    """
-    Mean dispatch overhead (J/op) per engine from dispatch-baseline rows.
-    Averages duplicates (e.g. dispatch_baseline_cpu_r0) and warns.
-    """
+def dispatch_baseline_mean_j(df: pd.DataFrame) -> pd.Series:
+    """Mean dispatch window energy (J) per engine from dispatch-baseline rows."""
     mask = df["operator"].isin(DISPATCH_OPERATORS)
     base = df.loc[mask].copy()
     if base.empty:
         warnings.warn("No dispatch-baseline rows found; using dispatch_energy_J column only.")
         return pd.Series(dtype=float)
 
-    base["energy_per_op_J"] = (
-        base["window_energy_J"] - base["dispatch_energy_J"].fillna(0)
-    ) / base["iterations_completed"]
-
     dupes = base.groupby("engine").size()
     for engine, count in dupes.items():
         if count > 1:
             warnings.warn(
                 f"Multiple dispatch-baseline rows for engine={engine!r} (n={count}); "
-                "averaging for dedupe."
+                "averaging window_energy_J for mean subtract."
             )
 
-    return base.groupby("engine")["energy_per_op_J"].mean()
+    return base.groupby("engine")["window_energy_J"].mean()
+
+
+def idle_baseline_mean_j(df: pd.DataFrame) -> float | None:
+    """Mean idle window energy (J) over all idle rows; engine tag is metadata only."""
+    mask = df["operator"] == "idle"
+    base = df.loc[mask].copy()
+    if base.empty:
+        warnings.warn("No idle baseline rows found; using idle_energy_J column only.")
+        return None
+
+    if len(base) > 1:
+        warnings.warn(
+            f"Multiple idle rows (n={len(base)}); averaging window_energy_J for mean subtract."
+        )
+
+    return float(base["window_energy_J"].mean())
 
 
 def baseline_subtract(df: pd.DataFrame) -> pd.DataFrame:
-    convention = "RAW (subtract dispatch)" if WINDOW_ENERGY_IS_RAW else "NET (no dispatch subtract)"
+    convention = (
+        "RAW (subtract idle + dispatch)"
+        if WINDOW_ENERGY_IS_RAW
+        else "NET (no baseline subtract)"
+    )
     print(f"[2/5] baseline_subtract — WINDOW_ENERGY_IS_RAW={WINDOW_ENERGY_IS_RAW} ({convention})")
     numeric_cols = [
         "window_energy_J",
+        "idle_energy_J",
         "dispatch_energy_J",
         "iterations_completed",
         "repeat_idx",
@@ -123,40 +141,66 @@ def baseline_subtract(df: pd.DataFrame) -> pd.DataFrame:
         work["fusion_member"] = np.nan
         warnings.warn("Column fusion_member missing; fusion gap may be incomplete.")
 
-    dispatch_by_engine = dispatch_baseline_per_engine(work)
-    if WINDOW_ENERGY_IS_RAW and not dispatch_by_engine.empty:
-        print(f"      dispatch baseline J/op by engine:\n{dispatch_by_engine.to_string()}")
+    idle_mean_j = idle_baseline_mean_j(work)
+    dispatch_mean_j = dispatch_baseline_mean_j(work)
+    if WINDOW_ENERGY_IS_RAW:
+        if idle_mean_j is not None:
+            print(f"      idle mean floor J={idle_mean_j:.2f}")
+        if not dispatch_mean_j.empty:
+            print(f"      dispatch mean window J by engine:\n{dispatch_mean_j.to_string()}")
 
     measure = work[~work["operator"].isin(DISPATCH_OPERATORS | SKIP_OPERATORS)].copy()
     measure = measure[measure["iterations_completed"] > 0]
 
     if WINDOW_ENERGY_IS_RAW:
-        # Use row dispatch_energy_J when present; else engine baseline rate × iterations.
-        fallback_dispatch_j = (
-            measure["engine"].map(dispatch_by_engine) * measure["iterations_completed"]
-        )
-        dispatch_j = measure["dispatch_energy_J"].fillna(fallback_dispatch_j).fillna(0)
+        idle_fill = 0.0 if idle_mean_j is None or pd.isna(idle_mean_j) else idle_mean_j
+        idle_j = measure["idle_energy_J"].fillna(idle_fill).fillna(0.0)
 
-        populated_dispatch = measure["dispatch_energy_J"].notna()
-        bad_order = populated_dispatch & (
-            measure["dispatch_energy_J"] > measure["window_energy_J"]
-        )
-        if bad_order.any():
-            for run_id in measure.loc[bad_order, "run_id"].astype(str):
-                warnings.warn(
-                    f"DISPATCH CONVENTION MISMATCH? run_id={run_id}: "
-                    "dispatch_energy_J > window_energy_J while WINDOW_ENERGY_IS_RAW=True — "
-                    "window may already be net; consider WINDOW_ENERGY_IS_RAW=False.",
-                    stacklevel=2,
+        engine_dispatch_fill = measure["engine"].map(dispatch_mean_j)
+        dispatch_fill = engine_dispatch_fill.fillna(0.0)
+        dispatch_j = measure["dispatch_energy_J"].fillna(dispatch_fill).fillna(0.0)
+
+        if idle_fill == 0.0 and measure["idle_energy_J"].isna().all():
+            print("[WARN] no idle baseline; energy_per_op_idle (headline) will be unsubtracted")
+        if dispatch_mean_j.empty and measure["dispatch_energy_J"].isna().all():
+            print(
+                "[WARN] no dispatch baseline; energy_per_op_dispatch (secondary) "
+                "will be unsubtracted"
+            )
+        elif engine_dispatch_fill.isna().any() and measure["dispatch_energy_J"].isna().any():
+            missing = measure.loc[
+                engine_dispatch_fill.isna() & measure["dispatch_energy_J"].isna(), "engine"
+            ].unique()
+            for engine in missing:
+                print(
+                    f"[WARN] no dispatch baseline for engine={engine!r}; "
+                    "energy_per_op_dispatch will be unsubtracted for those rows"
                 )
 
-        measure["energy_per_op_J"] = (
+        for col_name, col in (("idle_energy_J", idle_j), ("dispatch_energy_J", dispatch_j)):
+            bad_order = col.notna() & (col > measure["window_energy_J"])
+            if bad_order.any():
+                for run_id in measure.loc[bad_order, "run_id"].astype(str):
+                    warnings.warn(
+                        f"BASELINE CONVENTION MISMATCH? run_id={run_id}: "
+                        f"{col_name} > window_energy_J while WINDOW_ENERGY_IS_RAW=True — "
+                        "window may already be net; consider WINDOW_ENERGY_IS_RAW=False.",
+                        stacklevel=2,
+                    )
+
+        measure["energy_per_op_idle"] = (
+            measure["window_energy_J"] - idle_j
+        ) / measure["iterations_completed"]
+        measure["energy_per_op_dispatch"] = (
             measure["window_energy_J"] - dispatch_j
         ) / measure["iterations_completed"]
+        measure["energy_per_op_J"] = measure["energy_per_op_idle"]
     else:
-        measure["energy_per_op_J"] = (
+        measure["energy_per_op_idle"] = (
             measure["window_energy_J"] / measure["iterations_completed"]
         )
+        measure["energy_per_op_dispatch"] = measure["energy_per_op_idle"]
+        measure["energy_per_op_J"] = measure["energy_per_op_idle"]
 
     n_bad = measure["energy_per_op_J"].isna().sum()
     if n_bad:
@@ -173,13 +217,34 @@ def aggregate_repeats(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Missing grouping columns for aggregation: {sorted(missing)}")
 
-    agg = (
-        df.groupby(cols, dropna=False)["energy_per_op_J"]
-        .agg(["mean", "std", "count"])
-        .reset_index()
-    )
-    agg = agg.rename(columns={"mean": "energy_per_op_J_mean", "std": "energy_per_op_J_std"})
-    agg["energy_per_op_J_std"] = agg["energy_per_op_J_std"].fillna(0.0)
+    agg_frames = []
+    for metric, mean_col, std_col in (
+        ("energy_per_op_J", "energy_per_op_J_mean", "energy_per_op_J_std"),
+        ("energy_per_op_dispatch", "energy_per_op_dispatch_mean", "energy_per_op_dispatch_std"),
+    ):
+        if metric not in df.columns:
+            continue
+        part = (
+            df.groupby(cols, dropna=False)[metric]
+            .agg(["mean", "std", "count"])
+            .reset_index()
+        )
+        part = part.rename(columns={"mean": mean_col, "std": std_col})
+        part[std_col] = part[std_col].fillna(0.0)
+        agg_frames.append(part)
+
+    if not agg_frames:
+        raise ValueError("No energy metrics to aggregate")
+
+    agg = agg_frames[0]
+    for part in agg_frames[1:]:
+        merge_cols = [c for c in cols if c in part.columns]
+        drop_cols = [c for c in ("count",) if c in part.columns]
+        agg = agg.merge(
+            part.drop(columns=drop_cols, errors="ignore"),
+            on=merge_cols,
+            how="left",
+        )
     print(f"      aggregated groups={len(agg)}")
     return agg
 
@@ -265,6 +330,8 @@ def per_operator_table(agg: pd.DataFrame) -> pd.DataFrame:
         "shape_index",
         "energy_per_op_J_mean",
         "energy_per_op_J_std",
+        "energy_per_op_dispatch_mean",
+        "energy_per_op_dispatch_std",
         "count",
     ) if c in agg.columns]
     out = agg[present + tail].copy()
@@ -359,6 +426,7 @@ _SYNTHETIC_HEADER = [
 ]
 
 _ITERATIONS = 10_000
+_IDLE_WINDOW_J = 200.0  # common host floor (J) joined onto measure rows
 
 
 def _synthetic_row(
@@ -374,8 +442,14 @@ def _synthetic_row(
     energy_per_op_j: float,
     repeat_idx: int = 0,
     input_shape: str = "",
+    idle_window_j: float = _IDLE_WINDOW_J,
 ) -> dict[str, Any]:
-    window_j = energy_per_op_j * _ITERATIONS
+    if operator == "idle":
+        window_j = idle_window_j
+        idle_col = ""
+    else:
+        window_j = energy_per_op_j * _ITERATIONS + idle_window_j
+        idle_col = f"{idle_window_j:.6f}"
     return {
         "run_id": run_id,
         "operator": operator,
@@ -404,7 +478,7 @@ def _synthetic_row(
         "idle_power_w": "",
         "active_power_w": "",
         "window_energy_J": f"{window_j:.6f}",
-        "idle_energy_J": "",
+        "idle_energy_J": idle_col,
         "energy_per_op_J": "",
         "dispatch_energy_J": "0",
         "notes": "synthetic",
@@ -495,6 +569,21 @@ def write_runs_synthetic(path: Path) -> Path:
             shape_index=0,
             energy_per_op_j=50.0 * mj_to_j,
             input_shape="197x768",
+        )
+    )
+
+    rows.append(
+        _synthetic_row(
+            run_id="idle_cpu_r0",
+            operator="idle",
+            tier="n/a",
+            block_id="n/a",
+            shape_class="n/a",
+            fusion_member=False,
+            engine="cpu",
+            shape_index=-1,
+            energy_per_op_j=0.0,
+            input_shape="n/a",
         )
     )
 
