@@ -844,6 +844,27 @@ def get_entry(name: str) -> OperatorEntry:
     return OPERATOR_REGISTRY[name]
 
 
+def shape_index_in_range(name: str, shape_index: int) -> bool:
+    """True when shape_index selects a valid entry.shape_profiles slot."""
+    n = len(get_entry(name).shape_profiles)
+    return 0 <= shape_index < n
+
+
+def warn_skip_out_of_range_shape_index(name: str, shape_index: int) -> bool:
+    """
+    Print [WARN] and return False when shape_index is out of range.
+    Callers should skip the run (never raise).
+    """
+    if shape_index_in_range(name, shape_index):
+        return True
+    n = len(get_entry(name).shape_profiles)
+    print(
+        f"[WARN] skip {name}: shape_index={shape_index} out of range "
+        f"(profiles={n})"
+    )
+    return False
+
+
 def profile_indices_for_corner(name: str, shape_class: str = "avg") -> list[int]:
     """
     shape_index values for one DSE corner (e.g. avg / N=197).
@@ -942,6 +963,12 @@ def build_sweep_plan(
         entry = get_entry(name)
         skip = ",".join(sorted(SWEEP_SKIP_ENGINES.get(name, frozenset())))
         for idx in indices:
+            if not shape_index_in_range(name, idx):
+                print(
+                    f"[WARN] skip {name}: shape_index={idx} out of range "
+                    f"(profiles={len(entry.shape_profiles)})"
+                )
+                continue
             profile = entry.shape_profiles[idx]
             tier, block_id, corner = measure_context_from_profile(
                 profile,
@@ -1037,17 +1064,42 @@ def export_all_graphs(all_shapes: bool = False) -> None:
     print(f"  exported {DISPATCH_BASELINE_PATH.name} (Add input+constant)")
 
 
-def quantize_all_xint8(all_shapes: bool = False) -> None:
-    """Offline NPU prep: quantize every exported FP32 graph to XINT8 (not timed)."""
+def quantize_all_xint8(
+    all_shapes: bool = False,
+    *,
+    shape_class: str | None = None,
+    operators: Iterable[str] | None = None,
+) -> None:
+    """Offline NPU prep: quantize FP32 graphs to XINT8 (not timed)."""
     from npu import ensure_xint8_model
 
     ONNX_GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
-    for name, entry in OPERATOR_REGISTRY.items():
-        shape_indices = range(len(entry.shape_profiles)) if all_shapes else [0]
-        for idx in shape_indices:
-            fp32_path, meta, _ = build_operator_graph(name, idx)
+
+    if shape_class is not None:
+        plan = build_sweep_plan(
+            operators or SESSION_MEASURE_OPERATORS,
+            shape_class=shape_class,
+        )
+        seen: set[tuple[str, int]] = set()
+        for row in plan:
+            key = (row.operator, row.shape_index)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not warn_skip_out_of_range_shape_index(row.operator, row.shape_index):
+                continue
+            fp32_path, meta, _ = build_operator_graph(row.operator, row.shape_index)
             ensure_xint8_model(fp32_path, meta["feeds"])
             print(f"  xint8 {xint8_onnx_path(fp32_path).name}")
+    else:
+        for name, entry in OPERATOR_REGISTRY.items():
+            shape_indices = range(len(entry.shape_profiles)) if all_shapes else [0]
+            for idx in shape_indices:
+                if not warn_skip_out_of_range_shape_index(name, idx):
+                    continue
+                fp32_path, meta, _ = build_operator_graph(name, idx)
+                ensure_xint8_model(fp32_path, meta["feeds"])
+                print(f"  xint8 {xint8_onnx_path(fp32_path).name}")
 
     dispatch_meta = build_dispatch_baseline_graph(DISPATCH_BASELINE_PATH, OPSET)
     ensure_xint8_model(DISPATCH_BASELINE_PATH, dispatch_meta["feeds"])
@@ -1060,7 +1112,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--quantize-xint8-all",
         action="store_true",
-        help="Offline NPU prep: Quark XINT8 quantize all FP32 graphs (no measurement)",
+        help="Offline NPU prep: Quark XINT8 quantize FP32 graphs (no measurement)",
+    )
+    parser.add_argument(
+        "--sweep-corner-quantize",
+        action="store_true",
+        help="With --quantize-xint8-all: quantize only --corner sweep-plan profiles (not index 0 only)",
     )
     parser.add_argument(
         "--sweep-plan",
@@ -1100,6 +1157,10 @@ if __name__ == "__main__":
         write_sweep_plan(args.plan_out, plan)
         print(f"[sweep-plan] wrote {args.plan_out}")
     elif args.quantize_xint8_all:
-        quantize_all_xint8(all_shapes=args.all_shapes)
+        quantize_all_xint8(
+            all_shapes=args.all_shapes,
+            shape_class=args.corner if args.sweep_corner_quantize else None,
+            operators=tuple(args.operators) if args.operators else None,
+        )
     else:
         export_all_graphs(all_shapes=args.all_shapes)

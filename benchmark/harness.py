@@ -32,6 +32,7 @@ from operators import (
     fusion_member_csv,
     get_entry,
     measure_context_from_profile,
+    warn_skip_out_of_range_shape_index,
 )
 
 BENCHMARK_DIR = Path(__file__).parent
@@ -642,6 +643,8 @@ def _run_repeat(
 def _prep_npu_quantize_only(args: argparse.Namespace) -> None:
     """Offline XINT8 quantize for one graph; no session, no measured window."""
     if args.mode == "measure":
+        if not warn_skip_out_of_range_shape_index(args.operator, args.shape_index):
+            return
         onnx_path, meta, _ = build_operator_graph(args.operator, args.shape_index)
         label = args.operator
     elif args.mode == "dispatch":
@@ -667,6 +670,8 @@ def run_harness(args: argparse.Namespace) -> None:
     csv_opset: int | str = OPSET
 
     if args.mode == "measure":
+        if not warn_skip_out_of_range_shape_index(args.operator, args.shape_index):
+            return
         onnx_path, meta, entry = build_operator_graph(args.operator, args.shape_index)
         profile = entry.shape_profiles[args.shape_index]
         operator = entry.name
