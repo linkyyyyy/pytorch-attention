@@ -1,0 +1,13 @@
+# Regenerable benchmark artifacts (python operators.py)
+benchmark/onnx_graphs/*.onnx
+benchmark/.vaip_cache/
+
+# Runtime / local measurement output
+benchmark/onnxruntime_profile*.json
+benchmark/results/*
+!benchmark/results/.gitkeep
+benchmark/__pycache__/
+**/__pycache__/
+
+# Root-level plumbing test artifact
+gemm_test.onnx
