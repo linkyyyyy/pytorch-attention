@@ -24,6 +24,7 @@ from typing import Any, Callable
 import numpy as np
 
 from npu import VaiPartition, ensure_xint8_model, make_npu_session
+from npu.path import xint8_path_for
 from operators import (
     DISPATCH_BASELINE_PATH,
     OPSET,
@@ -344,6 +345,11 @@ def _write_metadata_once() -> None:
         print(f"[metadata] wrote {METADATA_PATH}")
 
 
+def _cpu_ep_engine(engine: str) -> str:
+    """Map harness engine label to CPU EP branch (cpu_int8 uses CPUExecutionProvider)."""
+    return "cpu" if engine in ("cpu", "cpu_int8") else engine
+
+
 def _make_session_options(engine: str, enable_profiling: bool) -> Any:
     import onnxruntime as ort
 
@@ -362,9 +368,10 @@ def _create_session(onnx_path: Path, engine: str, device_id: int, enable_profili
     import onnxruntime as ort
 
     so = _make_session_options(engine, enable_profiling)
-    if engine == "cpu":
+    ep_engine = _cpu_ep_engine(engine)
+    if ep_engine == "cpu":
         providers = ["CPUExecutionProvider"]
-    elif engine == "igpu":
+    elif ep_engine == "igpu":
         providers = [("DmlExecutionProvider", {"device_id": device_id})]
     else:
         raise ValueError(f"Unsupported engine: {engine}")
@@ -380,7 +387,11 @@ def _check_ep_placement(sess: Any, engine: str) -> str:
             return ""
         with open(prof_file, encoding="utf-8") as f:
             data = json.load(f)
-        expected = "CPUExecutionProvider" if engine == "cpu" else "DmlExecutionProvider"
+        expected = (
+            "CPUExecutionProvider"
+            if _cpu_ep_engine(engine) == "cpu"
+            else "DmlExecutionProvider"
+        )
         fallbacks: list[str] = []
         for item in data:
             args = item.get("args", {})
@@ -441,9 +452,10 @@ def _create_io_binding(
         return None
 
     io_binding = sess.io_binding()
+    bind_engine = _cpu_ep_engine(engine)
     for name, arr in feeds.items():
         contiguous = np.ascontiguousarray(arr)
-        if engine == "igpu":
+        if bind_engine == "igpu":
             import onnxruntime as ort
 
             ort_value = ort.OrtValue.ortvalue_from_numpy(contiguous, "dml", device_id)
@@ -451,7 +463,7 @@ def _create_io_binding(
         else:
             io_binding.bind_cpu_input(name, contiguous)
     for name in output_names:
-        if engine == "igpu":
+        if bind_engine == "igpu":
             io_binding.bind_output(name, "dml", device_id)
         else:
             io_binding.bind_output(name, "cpu")
@@ -697,7 +709,7 @@ def run_harness(args: argparse.Namespace) -> None:
         dtype = "n/a"
         csv_opset = "n/a"
 
-    if args.engine == "npu" and args.mode in ("measure", "dispatch"):
+    if args.engine in ("npu", "cpu_int8") and args.mode in ("measure", "dispatch"):
         dtype = "xint8"
 
     if args.mode == "measure":
@@ -755,6 +767,39 @@ def run_harness(args: argparse.Namespace) -> None:
                 print(
                     f"[MEASURE_SESSION] run_id={run_id} int8={int8_path.name} "
                     f"providers={sess.get_providers()}"
+                )
+            elif args.engine == "cpu_int8":
+                assert onnx_path is not None and feeds is not None
+                int8_path = xint8_path_for(onnx_path)
+                if not int8_path.is_file():
+                    raise FileNotFoundError(
+                        f"Pre-quantized graph required, not found: {int8_path} "
+                        "(cpu_int8 reuses onnx_graphs/*_xint8.onnx; does not call Quark)"
+                    )
+                ep_cpu = "cpu"
+                if repeat_idx == 0:
+                    ep_note = _run_profile_check(
+                        int8_path,
+                        ep_cpu,
+                        args.device_id,
+                        feeds,
+                        output_names,
+                    )
+                    ep_note = f"{ep_note}; CPU_INT8_control; graph={int8_path.name}"
+                    print(f"[EP_CHECK] run_id={run_id} {ep_note}")
+                sess = _create_session(
+                    int8_path,
+                    ep_cpu,
+                    args.device_id,
+                    enable_profiling=False,
+                )
+                print(
+                    f"[MEASURE_SESSION] run_id={run_id} int8={int8_path.name} "
+                    f"providers={sess.get_providers()}"
+                )
+                use_iobinding = True
+                io_binding = _create_io_binding(
+                    sess, feeds, output_names, ep_cpu, args.device_id
                 )
             else:
                 if repeat_idx == 0:
@@ -819,7 +864,7 @@ def run_harness(args: argparse.Namespace) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Operator energy measurement harness")
     parser.add_argument("--operator", default="", help="Registry operator name (measure mode)")
-    parser.add_argument("--engine", required=True, choices=["cpu", "igpu", "npu"])
+    parser.add_argument("--engine", required=True, choices=["cpu", "cpu_int8", "igpu", "npu"])
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--warmup", type=float, default=5.0)
     parser.add_argument("--repeats", type=int, default=5)

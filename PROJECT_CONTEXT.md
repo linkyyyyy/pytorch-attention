@@ -154,7 +154,7 @@ PoolFormer pool, depthwise LPI still carry **placeholder shapes** in the registr
 use fabricated 12/64/197 instead of real `xcit_nano` 4-head/head_dim-32/N-196; conv ops hardcode
 768 channels vs real per-stage dims). Correct before Track-2 measurement.
 
-### Model-level (from the benchmark repo — see §8)
+### Model-level (from the benchmark repo — see §9)
 The supervisor's guidance: use AI to identify the most *complex* models, then pick
 **3–4 from each of the two lists** in the repo — **Attention Mechanisms** and **Vision
 Transformers** — chosen for *meaningful diversity*, not just raw complexity.
@@ -197,13 +197,10 @@ heavy modules as **compute efficiency probes**. That distinction can anchor a se
    PoolFormer-12 (same topology, different mixer). This requires 5 ViT-list models total.
    Confirm scope or drop one.
 
-2. **Quantization/precision policy (the most important methodological decision):** The NPU
-   requires INT8 via Quark. CPU can run FP32. iGPU can run FP16. Mixing precisions makes energy
-   differences a precision artifact, not a hardware finding — the same principle as §6's
-   "hold runtime constant" extended to precision. Options:
-   (a) Quantize all models to INT8, run INT8 on all three EPs — most comparable.
-   (b) Run each engine at its native-best precision, report precision explicitly alongside energy.
-   Either is defensible; silently mixing is not. This decision affects every result in the paper.
+2. **Quantization/precision policy:** Main operator sweep uses **FP32 on cpu/igpu, XINT8 on npu**
+   (see §7). A **cpu_INT8 control** sweep decomposes that cross-precision gap — do not treat
+   headline cpu-vs-npu cells as pure architecture without checking `precision_ratio`. For model-level
+   work, still choose explicitly: INT8-all-EPs vs native-best with precision reported.
 
 3. **Attention module execution context:** Run modules on synthetic feature map tensors directly
    (operator-level, analogous to the GEMM test) OR embed them in a ResNet-50 backbone and
@@ -260,12 +257,11 @@ PyTorch
    editor's own AI calls share the package power rail and add noise.
 3. **Hold the runtime constant.** Only the hardware engine varies across the CPU/iGPU/NPU columns
    (same ORT build, same model, same input). See §5.
-4. **Hold the precision constant.** This is the §3 rule extended one level. The NPU requires INT8
-   (via Quark); the CPU will run FP32; the iGPU will run FP16 by default. Comparing them at
-   different precisions makes energy differences a *precision artifact*, not a hardware finding —
-   INT8 is intrinsically cheaper per op regardless of which engine runs it. Decision pending (see §4
-   open decision #2), but the default should be: quantize all models to INT8, run INT8 on all three
-   EPs. The CPU and DirectML EPs both support QDQ INT8 graphs from Quark.
+4. **Hold precision explicit across engines.** Measured operator sweep: **cpu/igpu = FP32,
+   npu = Quark XINT8** (`onnx_graphs/*_xint8.onnx`). Cross-engine headline gaps confound precision
+   and architecture — use §7 decomposition (`precision_ratio`, `architecture_ratio`) before
+   attributing NPU wins to XDNA2 alone. Do not rank deployment on `original_gap` where
+   `precision_ratio` departs far from 1.
 5. **Verify each model exports AND compiles before building the harness around it.** A model that
    exports to ONNX successfully may still fail the Vitis AI compiler (unsupported ops, dynamic
    shapes, control flow). Run `onnxruntime.InferenceSession(path, providers=["VitisAIExecutionProvider"])`
@@ -273,7 +269,81 @@ PyTorch
 
 ---
 
-## 7. TIMELINE (supervisor's draft plan; started June 1, 2026)
+## 7. OPERATOR ENERGY SWEEP — MEASURED FINDINGS
+
+Full production sweep **done** on HX 370. Headline metric: idle-subtracted `energy_per_op_J_mean`
+in `benchmark/results/analysis_out.csv`. Env: `ryzen-ai-1.6.0`, `cwd: benchmark/`.
+
+### Sessions (both measured + post-process validated)
+
+| Session | Engines | Idle floor (30 s) | Key artifacts |
+|---|---|---|---|
+| `20260612_143854` | cpu FP32, igpu FP32, npu XINT8 | **216.22 J** | `results/runs_20260612_143854.csv`, `results/analysis_out.csv`, `results/runs_enriched.csv` |
+| `20260615_145614_cpu_int8` | cpu_INT8 (same `_xint8.onnx`, CPU EP) | **326.49 J** | `results/runs_20260615_145614_cpu_int8.csv`, `results/analysis_out_20260615_145614_cpu_int8.csv` |
+
+21 operator configs × 5 repeats + baselines per session. uProf under `results/uprof/<session_id>/`.
+
+### cpu_INT8 control — purpose (not a deployment path)
+
+Methodological control to split the FP32-cpu vs INT8-npu headline gap:
+
+| ratio | formula | isolates |
+|---|---|---|
+| `precision_ratio` | cpu_FP32 / cpu_INT8 | 8-bit vs 32-bit on **same silicon** |
+| `architecture_ratio` | cpu_INT8 / npu_INT8 | engine at **matched QDQ graph** |
+| `original_gap` | cpu_FP32 / npu_INT8 | prior cross-engine headline |
+
+Sanity: `precision_ratio × architecture_ratio = original_gap` — identity = 1.000 by algebra (**consistency check only**; see idle-drift caveat below).
+
+### Headline decomposition result
+
+On **GEMMs and heavy convs** (`ffn_gemm`, `qkv_proj_gemm`, `out_proj_gemm`, `downsample_conv2d`,
+`patch_embed_conv2d`, `depthwise_conv2d`): **`precision_ratio` < 1 on all** (INT8 *penalizes* CPU via
+Q/DQ overhead) and **`architecture_ratio` ≈ 3–14×** (NPU wins at matched INT8). The NPU advantage on
+these ops is **architectural (XDNA2)**, not a quantization artifact in the headline grid.
+
+Cheap memory-bound ops (`softmax`, `gelu`, `residual_add`): `precision_ratio` ≈ **0.04–0.28**
+(`avg_pool_token_mixer` excluded — LOW-TRUST, see trust table below) — QDQ-on-CPU is catastrophic;
+quantizing them for a CPU path is energetically irrational.
+
+### Sign-divergence (key insight decomposition surfaced)
+
+**Headline winner ≠ best INT8 engine** when `original_gap` < 1 but `architecture_ratio` > 1:
+
+| op | original_gap | architecture_ratio | meaning |
+|---|---:|---:|---|
+| `softmax[s1]` | 0.22 | 5.75 | FP32-cpu beats npu_INT8; if quantizing, NPU runs INT8 far better than cpu_INT8 |
+| `depthwise_conv2d` | 0.52 | 3.15 | same pattern |
+
+"Which engine wins at measured precision" and "which engine is better at matched INT8" are **different
+decisions** — the headline `ENGINE_SELECTION` grid hid this; decomposition exposes it.
+
+### Trust carry-forwards (apply to all future analysis)
+
+| cell | status | action |
+|---|---|---|
+| `sra_conv2d × npu` | **UNTRUSTED** | Gate 2: CPU-class ~45 W, throughput collapse. Exclude from NPU ranking. |
+| `attn_block_fused × npu` | **N/A** | Tier-2 fused graph not measured on NPU. |
+| `avg_pool_token_mixer × cpu_int8` | **LOW-TRUST** | CV 20.7% on control session; flag, do not roll into range summaries. |
+
+Orig session Gate 1: **0/62** LOW-TRUST on main sweep repeats.
+
+### Idle-drift caveat (cross-session)
+
+Raw idle differed **+51%** (216 J vs 327 J) between sessions. Resolved: **static-offset** character
+(steady ~45 W active plateaus, clean inter-window drops) + **per-session** `(window − idle) / iters`.
+**Identity = 1.000 is a consistency check only** (`cpu_INT8` cancels algebraically) — not validity
+evidence. Future sweeps: capture idle in the **same** session as measures.
+
+### Step 4 scoping (not yet executed)
+
+Operator→engine mapping is **not** done. When executed: rank GEMM/conv NPU candidates on
+`architecture_ratio` / matched-INT8 energy; rank FP32-deployment ops on FP32 grid; do not map on
+`original_gap` where `precision_ratio` ≪ 1 or ≫ 1.
+
+---
+
+## 8. TIMELINE (supervisor's draft plan; started June 1, 2026)
 
 | Phase | Duration | Notes |
 |---|---|---|
@@ -290,7 +360,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 8. KEY LINKS
+## 9. KEY LINKS
 
 **Related work (goal is similar to these, but for NPUs):**
 - https://arxiv.org/html/2409.04941v1
@@ -305,7 +375,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 9. SUPERVISOR'S EMAILS (verbatim)
+## 10. SUPERVISOR'S EMAILS (verbatim)
 
 **Email 1 — overall plan:**
 > First weeks you get familiar with programming NPUs and then the next couple of weeks you will
@@ -330,7 +400,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 10. TOOLING DECISIONS (current)
+## 11. TOOLING DECISIONS (current)
 
 - **Cursor** — primary authoring environment for now (free until **June 28, 2026**). Reads the cloned
   `pytorch-attention` repo; used to draft export scripts.
@@ -344,7 +414,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 11. CURRENT STATUS / CHANGELOG
+## 12. CURRENT STATUS / CHANGELOG
 
 - **2026-06-02 (Day 1):** uProf responsive via CLI. ONNX Runtime confirmed exposing CPU + DirectML +
   Vitis AI EPs in one `ryzen-ai-1.6.0` conda env (single-environment rule satisfied). Tooling decided: Cursor now,
@@ -542,30 +612,19 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   - **Headline:** `energy_per_op_J` = idle-subtracted in `analysis.py`; `energy_per_op_dispatch` retained as secondary (NPU dispatch CPU-fallback caveat).
   - **Run-id:** harness `resolve_run_id()` appends `_r{repeat_idx}` once; strips trailing `_r\d+` from `--run-id`.
 
-- **Open — pending supervisor input (increasingly urgent):**
-  - **Precision policy (§4 decision #2):** INT8-all engines vs native-best (FP32 CPU / FP16 iGPU / INT8 NPU). Unresolved; affects all cross-engine energy comparisons.
+- **2026-06-15 (operator sweep + cpu_INT8 control — COMPLETE):** Production sweep session
+  `20260612_143854` (cpu/igpu FP32, npu XINT8; idle 216.22 J) measured, post-processed, trust-validated.
+  cpu_INT8 methodological control `20260615_145614_cpu_int8` (idle 326.49 J) measured + Step 2 validated.
+  Decomposition complete: NPU GEMM/conv wins are **architectural** (`architecture_ratio` 3–14×,
+  `precision_ratio` < 1 on all GEMMs). Sign-divergence on `softmax`, `depthwise_conv2d` (headline
+  winner ≠ best INT8 engine). Trust carry-forwards: `sra_conv2d×npu` UNTRUSTED, `attn_block_fused×npu`
+  N/A, `avg_pool_token_mixer×cpu_int8` LOW-TRUST. Idle +51% cross-session resolved (static offset +
+  per-session subtraction; identity=1.000 is consistency-only). **Durable summary: §7.** Step 4
+  (operator→engine mapping) not started. Handoff `.md` files in `benchmark/` are disposable scaffolding.
+
+- **Open — pending supervisor input:**
   - **PoolFormer vs PvT control pair** (architecture selection).
+  - **Model-level precision policy** for full ViT benchmarks (operator sweep used FP32 cpu/igpu + INT8 npu; see §7).
 
-- **TODO next (tower session — gate before full SDPA sweep):**
-
-  **First action — one-row verification** (`ffn_gemm` at `sdpa_avg`, shape `197×768@768×3072`,
-  `conda activate ryzen-ai-1.6.0`, clean machine, editor closed). Join with uProf via
-  `parse_energy.py`, then run `analysis.py`. Confirm all five before sweeping:
-  1. **RAW vs NET convention** — does `window_energy_J` include dispatch overhead? Set
-     `WINDOW_ENERGY_IS_RAW` in `analysis.py` to match; watch for `dispatch_energy_J > window_energy_J`
-     warnings.
-  2. **`energy_per_op_J` (idle-subtracted headline) positive and non-trivial** — not NaN, not ~0.
-  3. **Sanity:** `(window_energy_J − idle_energy_J) / iterations × iterations_completed ≈ marginal package energy over window`.
-  4. **Iteration count in the thousands** — if suspiciously low, `synchronize_outputs()` on iGPU may have regressed.
-  5. **Exactly one idle + one dispatch baseline per engine** (dedupe if duplicates; no double-count).
-  6. **Secondary:** `energy_per_op_dispatch` for per-engine view; treat NPU dispatch as CPU-fallback caveat.
-
-  **After gate passes:**
-  - Export all SDPA shapes: `python operators.py --all-shapes`
-  - SDPA sweep: isolated fusion_member ops + `attn_block_fused` × 3 corners × 3 engines × repeats
-  - `parse_energy.py` → `analysis.py` → fusion-gap table per corner
-  - Idle (common floor) + dispatch baselines under uProf each session
-  - Confirm BIOS VGM → `IGPU_VGM_MB` in `run_sweep.bat` / metadata
-
-  **Deferred (not blocking SDPA sweep):** Track-2 real-mixer shape fixes (§4); Christoforos check-in;
-  full 18-model shortlist scope decisions (§4).
+- **Deferred:** Track-2 real-mixer shape fixes (§4); Christoforos check-in; full 18-model shortlist scope
+  decisions (§4); Step 4 operator→engine mapping (§7).
