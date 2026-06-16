@@ -155,7 +155,7 @@ PoolFormer pool, depthwise LPI still carry **placeholder shapes** in the registr
 use fabricated 12/64/197 instead of real `xcit_nano` 4-head/head_dim-32/N-196; conv ops hardcode
 768 channels vs real per-stage dims). Correct before Track-2 measurement.
 
-### Model-level (from the benchmark repo — see §9)
+### Model-level (from the benchmark repo — see §10)
 The supervisor's guidance: use AI to identify the most *complex* models, then pick
 **3–4 from each of the two lists** in the repo — **Attention Mechanisms** and **Vision
 Transformers** — chosen for *meaningful diversity*, not just raw complexity.
@@ -276,6 +276,10 @@ PyTorch
    exports to ONNX successfully may still fail the Vitis AI compiler (unsupported ops, dynamic
    shapes, control flow). Run `onnxruntime.InferenceSession(path, providers=["VitisAIExecutionProvider"])`
    on each shortlisted model before committing to it. Discover export failures early.
+6. **Provenance for Step 4 + F2 outputs:** All Step 4 and F2 figure outputs on this checkout derive
+   from `benchmark/ANALYSIS_REFERENCE.md` §3 (committed production snapshot), **not** primary
+   `results/` CSVs (gitignored, tower-only). Regenerate from primary CSVs **and** run a §3-vs-primary
+   cell-by-cell diff before any number reaches the paper.
 
 ---
 
@@ -328,7 +332,7 @@ quantizing them for a CPU path is energetically irrational.
 "Which engine wins at measured precision" and "which engine is better at matched INT8" are **different
 decisions** — the headline `ENGINE_SELECTION` grid hid this; decomposition exposes it.
 
-### Trust carry-forwards (apply to all future analysis)
+### Trust carry-forwards (apply to all future analysis; unchanged as of 2026-06-16)
 
 | cell | status | action |
 |---|---|---|
@@ -345,23 +349,81 @@ Raw idle differed **+51%** (216 J vs 327 J) between sessions. Resolved: **static
 **Identity = 1.000 is a consistency check only** (`cpu_INT8` cancels algebraically) — not validity
 evidence. Future sweeps: capture idle in the **same** session as measures.
 
-### Step 4 scoping (not yet executed)
+### Step 4 (operator→engine mapping)
 
-Operator→engine mapping is **not** done. When executed: rank GEMM/conv NPU candidates on
-`architecture_ratio` / matched-INT8 energy; rank FP32-deployment ops on FP32 grid; do not map on
-`original_gap` where `precision_ratio` ≪ 1 or ≫ 1.
+Mapping **complete (2026-06-16)** — full method and findings in **§8 (PROVISIONAL)**. Do not
+conflate §8 deployment recommendations with validated §7 decomposition numbers until tower regen.
 
 ---
 
-## 8. TIMELINE (supervisor's draft plan; started June 1, 2026)
+## 8. OPERATOR→ENGINE MAPPING — STEP 4 (PROVISIONAL)
+
+> **Status: COMPLETE 2026-06-16 — PROVISIONAL.** Derived from `ANALYSIS_REFERENCE.md` §3 snapshot;
+> awaiting regen from primary `results/` CSVs on tower. **Not validated measurement findings** — do
+> not cite as paper-grade until §3-vs-primary diff passes.
+
+### Method (mechanistic routing)
+
+- **COMPUTE_BOUND_DENSE** (GEMMs, dense convs): rank on **matched-INT8** energy
+  (`architecture_ratio` = cpu_INT8 / npu_INT8).
+- **MEMORY_BOUND** (elementwise, norms, pooling, **and depthwise_conv2d** — low arithmetic
+  intensity): rank on **FP32 grid** (cpu_FP32 vs igpu_FP32).
+- `|precision_ratio − 1| > 0.25` is an **ADVISORY** guard (confirms `original_gap` is unsafe to
+  rank on); it does **not** route.
+
+### Coverage asymmetry (scope limit)
+
+Dense ranking = CPU vs NPU only (no iGPU INT8 cell). Memory ranking = CPU vs iGPU only (no NPU FP32
+cell). CPU is the only engine in both grids. No operator gets a 3-way matched ranking; cross-precision
+comparison deliberately not done.
+
+### Tunable 10% guards (pending Chris review)
+
+| guard | value | role |
+|---|---|---|
+| `TIE_THRESHOLD` | 0.10 | deployment relative-energy tie (`TIE_POLICY=report`) |
+| `SIGN_MARGIN` | 0.10 | sign-divergence robustness (guards near-parity headline flips) |
+
+### Findings (avg corner; PROVISIONAL)
+
+- **Dense GEMM/conv sweep → NPU**, architectural (`architecture_ratio` 3–14×, `precision_ratio` < 1).
+- **Contested matmuls** (`attn_score_matmul`, `attn_value_matmul`, `xcit_cov_matmul`) → CPU (arch < 1).
+- **Memory-bound → mostly CPU**; `avg_pool_token_mixer` → iGPU; `depthwise_conv2d` and `group_norm`
+  → 10% ties (cpu/igpu).
+
+### Two DISTINCT divergence columns (do not conflate)
+
+| column | meaning | PROVISIONAL set |
+|---|---|---|
+| `sign_divergence` | headline winner ≠ best-INT8 engine | **ROBUST = {softmax[s1], depthwise_conv2d}** — confirms 06-15 consolidation |
+| `diverges_deployment` | deployment winner ≠ naive cheapest as-measured cell | **{batch_norm, group_norm}** — deployment-facing twin, not a second headline |
+
+**batch_norm footnote:** MARGINAL sign-flip (gap = 1.03, 2.5% past parity, `sign_marginal = True`) →
+guarded out; explicitly **not** a third divergence op. Robust best-INT8 engine = CPU (arch = 0.81).
+Footnote only — not contested-middle (clear INT8 winner exists).
+
+### Artifacts
+
+| artifact | path |
+|---|---|
+| Repro script | `benchmark/step4_operator_engine_mapping.py` |
+| Machine output | `benchmark/results/step4_operator_engine_mapping.csv` |
+| Readable table | `benchmark/STEP4_OPERATOR_ENGINE_MAPPING.md` |
+| Handoff | `benchmark/STEP4_HANDOFF.md` |
+| Chris sheet import | `benchmark/STEP4_FOR_SHEET.csv` (new tab — not raw measurement log) |
+| F2 figure (queued) | `figures/F2_decomposition.png` + `figures/plot_f2_decomposition.py` |
+
+---
+
+## 9. TIMELINE (supervisor's draft plan; started June 1, 2026)
 
 | Phase | Duration | Notes |
 |---|---|---|
 | Getting familiar with NPU programming | 2 weeks | Done (GEMM plumbing + NPU branch). |
 | Preparing the testbench for power evaluation on LLM functions | 1 week | Done (harness, operators, run_plan, three-engine EPs). |
 | Measurements | 1 week | **Done (2026-06-12)** — three-engine production sweep captured. |
-| Refinement and validation | 1 week | **Mostly done (2026-06-15).** Post-process, trust validation, cpu_INT8 decomposition complete. **Step 4 mapping remains.** |
-| Preparation of the report | 2 weeks | **← current phase.** Step 4 → Chris sign-off → paper scaffold. |
+| Refinement and validation | 1 week | **Done (2026-06-15/16).** Post-process, trust validation, cpu_INT8 decomposition (§7). Step 4 mapping complete — **§8 PROVISIONAL** pending tower regen. |
+| Preparation of the report | 2 weeks | **← current phase.** Tower regen + Chris sign-off → paper drafting. |
 
 **Operator ordering tip:** GEMM first as a *pipeline plumbing test* (simplest op, proves the loop),
 then move immediately to **scaled-dot-product attention** as the first *real* operator — that's what
@@ -370,7 +432,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 9. KEY LINKS
+## 10. KEY LINKS
 
 **Related work (goal is similar to these, but for NPUs):**
 - https://arxiv.org/html/2409.04941v1
@@ -385,7 +447,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 10. SUPERVISOR'S EMAILS (verbatim)
+## 11. SUPERVISOR'S EMAILS (verbatim)
 
 **Email 1 — overall plan:**
 > First weeks you get familiar with programming NPUs and then the next couple of weeks you will
@@ -410,7 +472,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 11. TOOLING DECISIONS (current)
+## 12. TOOLING DECISIONS (current)
 
 - **Cursor** — primary authoring environment for now (free until **June 28, 2026**). Reads the cloned
   `pytorch-attention` repo; used to draft export scripts.
@@ -424,7 +486,7 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ---
 
-## 12. CURRENT STATUS / CHANGELOG
+## 13. CURRENT STATUS / CHANGELOG
 
 - **2026-06-02 (Day 1):** uProf responsive via CLI. ONNX Runtime confirmed exposing CPU + DirectML +
   Vitis AI EPs in one `ryzen-ai-1.6.0` conda env (single-environment rule satisfied). Tooling decided: Cursor now,
@@ -642,31 +704,29 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   `precision_ratio` < 1 on all GEMMs). Sign-divergence on `softmax`, `depthwise_conv2d` (headline
   winner ≠ best INT8 engine). Trust carry-forwards: `sra_conv2d×npu` UNTRUSTED, `attn_block_fused×npu`
   N/A, `avg_pool_token_mixer×cpu_int8` LOW-TRUST. Idle +51% cross-session resolved (static offset +
-  per-session subtraction; identity=1.000 is consistency-only). **Durable summary: §7.** Step 4
-  (operator→engine mapping) not started. Handoff `.md` files in `benchmark/` are disposable scaffolding.
+  per-session subtraction; identity=1.000 is consistency-only). **Durable summary: §7.**
+
+- **2026-06-16 (Step 4 + F2 — PROVISIONAL on laptop checkout):** Operator→engine mapping complete
+  from `ANALYSIS_REFERENCE.md` §3 snapshot (not primary CSVs). Sign-margin guard (`SIGN_MARGIN=0.10`)
+  applied; robust sign-divergence pair unchanged (`softmax[s1]`, `depthwise_conv2d`); `batch_norm`
+  guarded out as marginal flip. Artifacts: `step4_operator_engine_mapping.py`/`.csv`,
+  `STEP4_OPERATOR_ENGINE_MAPPING.md`, `STEP4_HANDOFF.md`, `STEP4_FOR_SHEET.csv`; F2 figure queued
+  (`figures/F2_decomposition.png`). **Durable summary: §8 (PROVISIONAL).**
 
 - **Open — pending supervisor input:**
   - **PoolFormer vs PvT control pair** (architecture selection).
   - **Model-level precision policy** for full ViT benchmarks (operator sweep used FP32 cpu/igpu + INT8 npu; see §7).
+  - **Chris sign-off** on mechanistic routing, both 10% guards (`TIE_THRESHOLD`, `SIGN_MARGIN`), sign-divergence pair, coverage-asymmetry scope limit, baseline-drift caveat.
 
-- **Deferred:** Track-2 real-mixer shape fixes (§4); Christoforos check-in; full 18-model shortlist scope
-  decisions (§4).
-- **TODO next (where you are now — 2026-06-15):**
+- **Deferred:** Track-2 real-mixer shape fixes (§4); full 18-model shortlist scope decisions (§4).
 
-  **Done ✓**
-  - [x] Post-process production session `20260612_143854` → `analysis_out.csv`, `runs_enriched.csv`
-  - [x] Validation gate (WINDOW_ENERGY_IS_RAW, power×time, baselines, 62 configs; all PASS)
-  - [x] Trust validation (Gate 1: 0/62 LOW-TRUST; Gate 2: `sra_conv2d×npu` UNTRUSTED)
-  - [x] Engine-selection descriptive ranking (trusted cells; precision confound documented)
-  - [x] cpu_INT8 control sweep `20260615_145614_cpu_int8` + decomposition (identity = consistency only)
-  - [x] Step 3 consolidation (regime buckets, sign-divergence, Step 4 metric basis scoped)
+- **Tomorrow (TOWER):**
+  1. Regen Step 4 (and F2 if needed) from primary `results/` CSVs — sessions `20260612_143854`
+     (cpu/igpu FP32, npu XINT8) + `20260615_145614_cpu_int8`.
+  2. §3-vs-primary cell-by-cell diff → catch transcription errors; promote Step 4 PROVISIONAL → validated.
+  3. Chris sign-off: mechanistic routing, both 10% guards, sign-divergence pair, coverage-asymmetry
+     scope limit, baseline-drift caveat.
+  4. Begin paper drafting from settled numbers (scaffold done; §6 divergence section draftable first).
 
-  **Next**
-  - [ ] **Step 4:** operator→engine mapping (avg corner; rank per §7 metric basis — not raw `original_gap` where `precision_ratio` departs from 1)
-  - [ ] **Chris sign-off** on methodology + operator results (operator-level precision **resolved** via cpu_int8 control; **model-level** precision policy in §4 still needs his call)
-  - [ ] **Paper scaffold** (intro / methods incl. idle-drift caveat / results outline)
-
-  **Deferred**
-  - small/large SDPA corners; Track-2 real-mixer shape fixes (§4); full ViT shortlist scope (§4)
-  - `attn_block_fused×npu` (VitisAI crash — fusion gap on NPU unmeasurable)
-  - optional: re-measure `avg_pool_token_mixer×cpu_int8` (LOW-TRUST, CV 20.7%)
+- **Deferred MEASUREMENT (uProfBenchmarking branch, NOT critical path):** quiet-machine idle re-run;
+  `sra_conv2d` NPU remediation.
