@@ -276,10 +276,13 @@ PyTorch
    exports to ONNX successfully may still fail the Vitis AI compiler (unsupported ops, dynamic
    shapes, control flow). Run `onnxruntime.InferenceSession(path, providers=["VitisAIExecutionProvider"])`
    on each shortlisted model before committing to it. Discover export failures early.
-6. **Provenance for Step 4 + F2 outputs:** All Step 4 and F2 figure outputs on this checkout derive
+6. **Provenance for Step 4 + F2 outputs:** ~~All Step 4 and F2 figure outputs on this checkout derive
    from `benchmark/ANALYSIS_REFERENCE.md` §3 (committed production snapshot), **not** primary
    `results/` CSVs (gitignored, tower-only). Regenerate from primary CSVs **and** run a §3-vs-primary
-   cell-by-cell diff before any number reaches the paper.
+   cell-by-cell diff before any number reaches the paper.~~ **RESOLVED 2026-06-17:** Step 4 regen from
+   primary `results/` CSVs complete (`--source primary`); §3-vs-primary energy-layer diff
+   **83/83 numeric PASS + 1 expected-N/A** (`attn_block_fused×npu`). §8 promoted VALIDATED; Chris
+   methodological sign-off 2026-06-17. F2 figure still queued from validated mapping.
 
 ---
 
@@ -351,16 +354,19 @@ evidence. Future sweeps: capture idle in the **same** session as measures.
 
 ### Step 4 (operator→engine mapping)
 
-Mapping **complete (2026-06-16)** — full method and findings in **§8 (PROVISIONAL)**. Do not
-conflate §8 deployment recommendations with validated §7 decomposition numbers until tower regen.
+Mapping **complete and validated (2026-06-17)** — full method and findings in **§8 (VALIDATED)**.
+Tower regen from primary `results/` CSVs done; §3-vs-primary energy-layer diff
+**83/83 numeric PASS + 1 expected-N/A**. §7 decomposition numbers and §8 deployment recommendations
+are both measurement-backed — do not conflate the two *questions* (decomposition vs routing), but
+provenance is now aligned.
 
 ---
 
-## 8. OPERATOR→ENGINE MAPPING — STEP 4 (PROVISIONAL)
+## 8. OPERATOR→ENGINE MAPPING — STEP 4 (VALIDATED)
 
-> **Status: COMPLETE 2026-06-16 — PROVISIONAL.** Derived from `ANALYSIS_REFERENCE.md` §3 snapshot;
-> awaiting regen from primary `results/` CSVs on tower. **Not validated measurement findings** — do
-> not cite as paper-grade until §3-vs-primary diff passes.
+> **Status: COMPLETE 2026-06-17 — VALIDATED.** Regenerated from primary `results/` CSVs via
+> `--source primary`; §3-vs-primary energy-layer diff **83/83 numeric PASS + 1 expected-N/A**,
+> 2026-06-17. Chris methodological sign-off 2026-06-17.
 
 ### Method (mechanistic routing)
 
@@ -375,16 +381,19 @@ conflate §8 deployment recommendations with validated §7 decomposition numbers
 
 Dense ranking = CPU vs NPU only (no iGPU INT8 cell). Memory ranking = CPU vs iGPU only (no NPU FP32
 cell). CPU is the only engine in both grids. No operator gets a 3-way matched ranking; cross-precision
-comparison deliberately not done.
+comparison deliberately not done. Contested-middle ties (`TIE_THRESHOLD=0.10`) are sensitive to tensor
+dimensions; the mapping is single-corner (avg, N=197, D=768). Parameter sweeps over batch size and
+sequence length could change which engine wins a tied cell — flagged as future work, per supervisor
+sign-off.
 
-### Tunable 10% guards (pending Chris review)
+### Tunable 10% guards (Chris-approved 2026-06-17)
 
 | guard | value | role |
 |---|---|---|
-| `TIE_THRESHOLD` | 0.10 | deployment relative-energy tie (`TIE_POLICY=report`) |
-| `SIGN_MARGIN` | 0.10 | sign-divergence robustness (guards near-parity headline flips) |
+| `TIE_THRESHOLD` | 0.10 | deployment relative-energy tie (`TIE_POLICY=report`) — Chris-approved 2026-06-17 |
+| `SIGN_MARGIN` | 0.10 | sign-divergence robustness (guards near-parity headline flips) — Chris-approved 2026-06-17 |
 
-### Findings (avg corner; PROVISIONAL)
+### Findings (avg corner; VALIDATED)
 
 - **Dense GEMM/conv sweep → NPU**, architectural (`architecture_ratio` 3–14×, `precision_ratio` < 1).
 - **Contested matmuls** (`attn_score_matmul`, `attn_value_matmul`, `xcit_cov_matmul`) → CPU (arch < 1).
@@ -393,7 +402,7 @@ comparison deliberately not done.
 
 ### Two DISTINCT divergence columns (do not conflate)
 
-| column | meaning | PROVISIONAL set |
+| column | meaning | VALIDATED set |
 |---|---|---|
 | `sign_divergence` | headline winner ≠ best-INT8 engine | **ROBUST = {softmax[s1], depthwise_conv2d}** — confirms 06-15 consolidation |
 | `diverges_deployment` | deployment winner ≠ naive cheapest as-measured cell | **{batch_norm, group_norm}** — deployment-facing twin, not a second headline |
@@ -422,8 +431,8 @@ Footnote only — not contested-middle (clear INT8 winner exists).
 | Getting familiar with NPU programming | 2 weeks | Done (GEMM plumbing + NPU branch). |
 | Preparing the testbench for power evaluation on LLM functions | 1 week | Done (harness, operators, run_plan, three-engine EPs). |
 | Measurements | 1 week | **Done (2026-06-12)** — three-engine production sweep captured. |
-| Refinement and validation | 1 week | **Done (2026-06-15/16).** Post-process, trust validation, cpu_INT8 decomposition (§7). Step 4 mapping complete — **§8 PROVISIONAL** pending tower regen. |
-| Preparation of the report | 2 weeks | **← current phase.** Tower regen + Chris sign-off → paper drafting. |
+| Refinement and validation | 1 week | **Done (2026-06-15/17).** Post-process, trust validation, cpu_INT8 decomposition (§7). Step 4 mapping validated — **§8 VALIDATED** (tower regen + §3 diff + Chris sign-off 2026-06-17). |
+| Preparation of the report | 2 weeks | **← current phase.** Paper drafting from validated numbers. |
 
 **Operator ordering tip:** GEMM first as a *pipeline plumbing test* (simplest op, proves the loop),
 then move immediately to **scaled-dot-product attention** as the first *real* operator — that's what
@@ -713,20 +722,24 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   `STEP4_OPERATOR_ENGINE_MAPPING.md`, `STEP4_HANDOFF.md`, `STEP4_FOR_SHEET.csv`; F2 figure queued
   (`figures/F2_decomposition.png`). **Durable summary: §8 (PROVISIONAL).**
 
+- **2026-06-17 (Step 4 promotion — VALIDATED):** (a) Primary-CSV regen via
+  `step4_operator_engine_mapping.py --source primary` (sessions `20260612_143854` +
+  `20260615_145614_cpu_int8`). (b) §3-vs-primary energy-layer diff **83/83 numeric PASS + 1
+  expected-N/A** (`step4_provenance_diff.py`; output diff 0). (c) §8 **PROVISIONAL → VALIDATED**.
+  (d) Chris methodological sign-off 2026-06-17 — mechanistic routing, both 10% guards
+  (`TIE_THRESHOLD`, `SIGN_MARGIN`), sign-divergence pair, coverage-asymmetry scope limit (+ tie-sensitivity
+  stipulation), baseline-drift caveat. **Durable summary: §8 (VALIDATED).**
+
 - **Open — pending supervisor input:**
   - **PoolFormer vs PvT control pair** (architecture selection).
   - **Model-level precision policy** for full ViT benchmarks (operator sweep used FP32 cpu/igpu + INT8 npu; see §7).
-  - **Chris sign-off** on mechanistic routing, both 10% guards (`TIE_THRESHOLD`, `SIGN_MARGIN`), sign-divergence pair, coverage-asymmetry scope limit, baseline-drift caveat.
+  - ~~**Chris sign-off** on mechanistic routing, both 10% guards (`TIE_THRESHOLD`, `SIGN_MARGIN`), sign-divergence pair, coverage-asymmetry scope limit, baseline-drift caveat.~~ **RESOLVED 2026-06-17** (see §8).
 
 - **Deferred:** Track-2 real-mixer shape fixes (§4); full 18-model shortlist scope decisions (§4).
 
-- **Tomorrow (TOWER):**
-  1. Regen Step 4 (and F2 if needed) from primary `results/` CSVs — sessions `20260612_143854`
-     (cpu/igpu FP32, npu XINT8) + `20260615_145614_cpu_int8`.
-  2. §3-vs-primary cell-by-cell diff → catch transcription errors; promote Step 4 PROVISIONAL → validated.
-  3. Chris sign-off: mechanistic routing, both 10% guards, sign-divergence pair, coverage-asymmetry
-     scope limit, baseline-drift caveat.
-  4. Begin paper drafting from settled numbers (scaffold done; §6 divergence section draftable first).
+- **Next (paper):**
+  1. Begin paper drafting from validated numbers (scaffold done; §6 divergence section draftable first).
+  2. F2 figure from validated mapping (`figures/F2_decomposition.png`) if not yet rendered.
 
 - **Deferred MEASUREMENT (uProfBenchmarking branch, NOT critical path):** quiet-machine idle re-run;
   `sra_conv2d` NPU remediation.

@@ -2,12 +2,14 @@
 """
 Step 4 — operator-level deployment engine mapping (uProfAnalysis branch).
 
-Energy source: ANALYSIS_REFERENCE.md §3 ONLY (committed production snapshot).
-Does NOT read results/analysis_out.csv, runs_synthetic.csv, or any fixture.
+Energy sources (--source):
+  section3 (default): ANALYSIS_REFERENCE.md §3 committed snapshot.
+  primary: results/analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv.
 """
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -24,15 +26,45 @@ GROUP_KEY = ("operator", "shape_class")
 BENCHMARK_DIR = Path(__file__).parent
 ANALYSIS_REF = BENCHMARK_DIR / "ANALYSIS_REFERENCE.md"
 RESULTS_DIR = BENCHMARK_DIR / "results"
+PRIMARY_ANALYSIS = RESULTS_DIR / "analysis_out.csv"
+CONTROL_ANALYSIS = RESULTS_DIR / "analysis_out_20260615_145614_cpu_int8.csv"
+SESSION_PRODUCTION = "20260612_143854"
+SESSION_CONTROL = "20260615_145614_cpu_int8"
+RUNS_PRODUCTION = RESULTS_DIR / f"runs_{SESSION_PRODUCTION}.csv"
+RUNS_CONTROL = RESULTS_DIR / f"runs_{SESSION_CONTROL}.csv"
+
 OUT_CSV = RESULTS_DIR / "step4_operator_engine_mapping.csv"
 OUT_MD = BENCHMARK_DIR / "STEP4_OPERATOR_ENGINE_MAPPING.md"
 OUT_HANDOFF = BENCHMARK_DIR / "STEP4_HANDOFF.md"
+OUT_SHEET = BENCHMARK_DIR / "STEP4_FOR_SHEET.csv"
+OUT_CSV_PRIMARY = RESULTS_DIR / "step4_operator_engine_mapping_primary.csv"
+OUT_MD_PRIMARY = BENCHMARK_DIR / "STEP4_OPERATOR_ENGINE_MAPPING_primary.md"
+OUT_SHEET_PRIMARY = BENCHMARK_DIR / "STEP4_FOR_SHEET_primary.csv"
+OUT_CSV_PRIMARY_COMMITTED = BENCHMARK_DIR / "step4_operator_engine_mapping_primary.csv"
 
-PROVENANCE_BANNER = (
+PROVENANCE_BANNER_SECTION3 = (
     "PROVENANCE: energies from ANALYSIS_REFERENCE.md §3 (committed production snapshot), "
     "NOT primary results/ CSVs. Paper-grade table must be regenerated from tower CSVs "
     "(analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) before publication."
 )
+PROVENANCE_BANNER_PRIMARY = (
+    "PROVENANCE: energies from primary tower CSVs "
+    "(analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) at full precision."
+)
+
+SCHEMA_KEYS = ("operator", "shape_index")
+ENERGY_COLS = ("cpu_FP32", "igpu_FP32", "npu_INT8", "cpu_INT8")
+RATIO_COLS = ("precision", "architecture_ratio", "gap")
+SCHEMA_COLS = (
+    "operator",
+    "shape_index",
+    "shape_class",
+    "operator_label",
+    *ENERGY_COLS,
+    *RATIO_COLS,
+    "trust_flag",
+)
+RAW_COLS = tuple(f"raw_{c}" for c in (*ENERGY_COLS, *RATIO_COLS))
 
 COMPUTE_BOUND_DENSE = frozenset(
     {
@@ -77,13 +109,79 @@ def _parse_operator_label(label: str) -> tuple[str, int]:
     return label, 0
 
 
+def format_operator_label(operator: str, shape_index: int) -> str:
+    return f"{operator}[s{shape_index}]" if shape_index else operator
+
+
+def _shape_index_int(value) -> int:
+    return int(value) if pd.notna(value) else 0
+
+
+def _trust_flag_for(operator: str, op_raw: str = "") -> str:
+    trust = ""
+    if "†" in op_raw or operator == "avg_pool_token_mixer":
+        trust = "LOW-TRUST cpu_int8"
+    if "‡" in op_raw or operator == "sra_conv2d":
+        trust = "UNTRUSTED npu INT8"
+    if operator == "attn_block_fused":
+        trust = "N/A npu"
+    return trust
+
+
+def _derive_ratios(
+    cpu_fp32: float | None,
+    cpu_int8: float | None,
+    npu_int8: float | None,
+) -> tuple[float | None, float | None, float | None]:
+    precision = (
+        cpu_fp32 / cpu_int8
+        if cpu_fp32 is not None and cpu_int8 is not None and cpu_int8 != 0
+        else None
+    )
+    architecture_ratio = (
+        cpu_int8 / npu_int8
+        if cpu_int8 is not None and npu_int8 is not None and npu_int8 != 0
+        else None
+    )
+    gap = (
+        cpu_fp32 / npu_int8
+        if cpu_fp32 is not None and npu_int8 is not None and npu_int8 != 0
+        else None
+    )
+    return precision, architecture_ratio, gap
+
+
+def _validate_schema(df: pd.DataFrame) -> None:
+    missing = (set(SCHEMA_COLS) | set(RAW_COLS)) - set(df.columns)
+    if missing:
+        raise ValueError(f"build_decomposition_df schema missing columns: {sorted(missing)}")
+    if df.duplicated(subset=list(SCHEMA_KEYS)).any():
+        raise ValueError("duplicate (operator, shape_index) keys in decomposition table")
+    if not (df["shape_class"] == "avg").all():
+        raise ValueError("shape_class must be 'avg' for all rows")
+
+
+def build_decomposition_df(records: list[dict]) -> pd.DataFrame:
+    if not records:
+        raise ValueError("build_decomposition_df: zero records")
+    df = pd.DataFrame(records)
+    for col in SCHEMA_COLS:
+        if col not in df.columns:
+            df[col] = None
+    for col in RAW_COLS:
+        if col not in df.columns:
+            df[col] = ""
+    _validate_schema(df)
+    return df
+
+
 def parse_section3(path: Path) -> pd.DataFrame:
     text = path.read_text(encoding="utf-8")
     m = re.search(r"## 3\. Decomposition table\s*\n(.*?)(?:\n---|\n## 4\.)", text, re.DOTALL)
     if not m:
         raise SystemExit("HALT: §3 Decomposition table not found in ANALYSIS_REFERENCE.md")
 
-    rows: list[dict] = []
+    records: list[dict] = []
     for line in m.group(1).splitlines():
         line = line.strip()
         if not line.startswith("|") or line.startswith("| Operator") or line.startswith("|-"):
@@ -93,19 +191,12 @@ def parse_section3(path: Path) -> pd.DataFrame:
             continue
         op_raw, cf, ci, ni, ig, pr, ar, gap = parts
         base, shape_index = _parse_operator_label(op_raw)
-        trust = ""
-        if "†" in op_raw or "avg_pool" in base:
-            trust = "LOW-TRUST cpu_int8"
-        if "‡" in op_raw or base == "sra_conv2d":
-            trust = "UNTRUSTED npu INT8"
-        if base == "attn_block_fused":
-            trust = "N/A npu"
-        rows.append(
+        records.append(
             {
                 "operator": base,
                 "shape_index": shape_index,
                 "shape_class": "avg",
-                "operator_label": f"{base}[s{shape_index}]" if shape_index else base,
+                "operator_label": format_operator_label(base, shape_index),
                 "cpu_FP32": _parse_num(cf),
                 "cpu_INT8": _parse_num(ci),
                 "npu_INT8": _parse_num(ni),
@@ -113,13 +204,96 @@ def parse_section3(path: Path) -> pd.DataFrame:
                 "precision": _parse_num(pr),
                 "architecture_ratio": _parse_num(ar) if ar not in ("EXCLUDED", "N/A") else None,
                 "gap": _parse_num(gap),
-                "trust_flag": trust,
+                "trust_flag": _trust_flag_for(base, op_raw),
+                "raw_cpu_FP32": cf,
+                "raw_cpu_INT8": ci,
+                "raw_npu_INT8": ni,
+                "raw_igpu_FP32": ig,
+                "raw_precision": pr,
+                "raw_architecture_ratio": ar,
+                "raw_gap": gap,
             }
         )
 
-    if not rows:
+    if not records:
         raise SystemExit("HALT: §3 table unparseable (zero data rows)")
-    return pd.DataFrame(rows)
+    return build_decomposition_df(records)
+
+
+def load_primary() -> pd.DataFrame:
+    if not PRIMARY_ANALYSIS.exists():
+        raise SystemExit(f"HALT: primary analysis CSV not found: {PRIMARY_ANALYSIS}")
+    if not CONTROL_ANALYSIS.exists():
+        raise SystemExit(f"HALT: control analysis CSV not found: {CONTROL_ANALYSIS}")
+
+    orig = pd.read_csv(PRIMARY_ANALYSIS)
+    orig = orig[orig["table"] == "per_operator"]
+    ctrl = pd.read_csv(CONTROL_ANALYSIS)
+    ctrl = ctrl[ctrl["table"] == "per_operator"]
+
+    def _series(df: pd.DataFrame, engine: str) -> pd.Series:
+        sub = df[df["engine"] == engine].copy()
+        sub["shape_index"] = sub["shape_index"].map(_shape_index_int)
+        return sub.set_index(["operator", "shape_index"])["energy_per_op_J_mean"]
+
+    cpu_fp32 = _series(orig, "cpu")
+    igpu_fp32 = _series(orig, "igpu")
+    npu_int8 = _series(orig, "npu")
+    cpu_int8 = _series(ctrl, "cpu_int8")
+
+    keys = sorted(
+        set(cpu_fp32.index) | set(igpu_fp32.index) | set(npu_int8.index) | set(cpu_int8.index),
+        key=lambda k: (k[0], k[1]),
+    )
+
+    records: list[dict] = []
+    for operator, shape_index in keys:
+        cf = cpu_fp32.get((operator, shape_index))
+        ig = igpu_fp32.get((operator, shape_index))
+        ni = npu_int8.get((operator, shape_index))
+        ci = cpu_int8.get((operator, shape_index))
+        cf_f = float(cf) if pd.notna(cf) else None
+        ig_f = float(ig) if pd.notna(ig) else None
+        ni_f = float(ni) if pd.notna(ni) else None
+        ci_f = float(ci) if pd.notna(ci) else None
+        precision, architecture_ratio, gap = _derive_ratios(cf_f, ci_f, ni_f)
+        records.append(
+            {
+                "operator": operator,
+                "shape_index": shape_index,
+                "shape_class": "avg",
+                "operator_label": format_operator_label(operator, shape_index),
+                "cpu_FP32": cf_f,
+                "igpu_FP32": ig_f,
+                "npu_INT8": ni_f,
+                "cpu_INT8": ci_f,
+                "precision": precision,
+                "architecture_ratio": architecture_ratio,
+                "gap": gap,
+                "trust_flag": _trust_flag_for(operator),
+                "raw_cpu_FP32": "",
+                "raw_cpu_INT8": "",
+                "raw_npu_INT8": "",
+                "raw_igpu_FP32": "",
+                "raw_precision": "",
+                "raw_architecture_ratio": "",
+                "raw_gap": "",
+            }
+        )
+
+    if not records:
+        raise SystemExit("HALT: primary loader produced zero decomposition rows")
+    return build_decomposition_df(records)
+
+
+def load_decomposition(source: str) -> pd.DataFrame:
+    if source == "section3":
+        if not ANALYSIS_REF.exists():
+            raise SystemExit("HALT: ANALYSIS_REFERENCE.md not found")
+        return parse_section3(ANALYSIS_REF)
+    if source == "primary":
+        return load_primary()
+    raise SystemExit(f"HALT: unknown source {source!r}")
 
 
 def classify_mechanism(operator: str) -> tuple[str, str | None]:
@@ -319,15 +493,21 @@ def process_row(row: pd.Series) -> dict:
     }
 
 
-def write_markdown(out_df: pd.DataFrame) -> None:
+def write_markdown(
+    out_df: pd.DataFrame,
+    *,
+    out_md: Path,
+    energy_source: str,
+    provenance_banner: str,
+) -> None:
     lines = [
         "# Step 4 — Operator Engine Mapping",
         "",
-        f"> **{PROVENANCE_BANNER}**",
+        f"> **{provenance_banner}**",
         "",
         "Operator-level deployment recommendations (avg corner). **No model-level claims.**",
         "",
-        f"**Branch:** uProfAnalysis | **Energy source:** ANALYSIS_REFERENCE.md §3",
+        f"**Branch:** uProfAnalysis | **Energy source:** {energy_source}",
         f"**Config:** TIE_THRESHOLD={TIE_THRESHOLD}, TIE_POLICY={TIE_POLICY!r}, "
         f"PRECISION_GUARD={PRECISION_GUARD} (advisory only), SIGN_MARGIN={SIGN_MARGIN}",
         "",
@@ -412,7 +592,73 @@ def write_markdown(out_df: pd.DataFrame) -> None:
             "",
         ]
     )
-    OUT_MD.write_text("\n".join(lines), encoding="utf-8")
+    out_md.write_text("\n".join(lines), encoding="utf-8")
+
+
+SHEET_COLS = [
+    "operator",
+    "shape_class",
+    "cpu_FP32",
+    "cpu_INT8",
+    "npu_INT8",
+    "igpu_FP32",
+    "precision",
+    "architecture_ratio",
+    "gap",
+    "mechanism",
+    "winner",
+    "margin_pct",
+    "is_tie",
+    "sign_divergence",
+    "diverges_deployment",
+    "naive_winner",
+    "trust_flag",
+]
+
+
+def write_sheet(
+    decomp: pd.DataFrame,
+    out_df: pd.DataFrame,
+    *,
+    out_path: Path,
+    provenance: str,
+) -> None:
+    """Chris sheet-import: one flat row per operator (energies + routing), not raw runs log."""
+    decomp_idx = decomp.set_index(["operator", "shape_index"])
+    rows: list[dict] = []
+    for _, r in out_df.iterrows():
+        op_label = r["operator"]
+        base, shape_index = _parse_operator_label(op_label)
+        key = (base, shape_index)
+        if key not in decomp_idx.index:
+            raise ValueError(f"sheet export: missing decomposition row for {op_label}")
+        d = decomp_idx.loc[key]
+        rows.append(
+            {
+                "operator": op_label,
+                "shape_class": r["shape_class"],
+                "cpu_FP32": d["cpu_FP32"],
+                "cpu_INT8": d["cpu_INT8"],
+                "npu_INT8": d["npu_INT8"],
+                "igpu_FP32": d["igpu_FP32"],
+                "precision": d["precision"],
+                "architecture_ratio": d["architecture_ratio"],
+                "gap": d["gap"],
+                "mechanism": r["mechanism"],
+                "winner": r["winner"],
+                "margin_pct": r["margin_pct"],
+                "is_tie": r["is_tie"],
+                "sign_divergence": r["sign_divergence"],
+                "diverges_deployment": r["diverges_deployment"],
+                "naive_winner": r["naive_winner"],
+                "trust_flag": r["trust_flag"],
+            }
+        )
+    sheet_df = pd.DataFrame(rows)[SHEET_COLS]
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        f.write(f"# {provenance}\n")
+    sheet_df.to_csv(out_path, mode="a", index=False, float_format="%.17g")
 
 
 def write_handoff() -> None:
@@ -515,15 +761,43 @@ Decomposition identity `precision × arch = gap` → 1.000 across 20 triplet ops
     OUT_HANDOFF.write_text(text, encoding="utf-8")
 
 
+def run_routing(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame([process_row(row) for _, row in df.iterrows()])
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Step 4 operator engine mapping")
+    parser.add_argument(
+        "--source",
+        choices=("section3", "primary"),
+        default="section3",
+        help="Energy source: §3 markdown snapshot (default) or primary tower CSVs",
+    )
+    args = parser.parse_args()
+    source = args.source
+
+    if source == "section3":
+        out_csv = OUT_CSV
+        out_md = OUT_MD
+        out_sheet = OUT_SHEET
+        provenance = PROVENANCE_BANNER_SECTION3
+        energy_source = "ANALYSIS_REFERENCE.md §3"
+        write_handoff_flag = True
+        committed_csv_mirror = None
+    else:
+        out_csv = OUT_CSV_PRIMARY
+        out_md = OUT_MD_PRIMARY
+        out_sheet = OUT_SHEET_PRIMARY
+        provenance = PROVENANCE_BANNER_PRIMARY
+        energy_source = "primary tower CSVs (full precision)"
+        write_handoff_flag = False
+        committed_csv_mirror = OUT_CSV_PRIMARY_COMMITTED
+
     print("=" * 72)
     print("STEP 0 — ENERGY SOURCE")
     print("=" * 72)
-    if not ANALYSIS_REF.exists():
-        print("HALT: ANALYSIS_REFERENCE.md not found")
-        return 1
 
-    df = parse_section3(ANALYSIS_REF)
+    df = load_decomposition(source)
     cols = [
         "operator",
         "shape_class",
@@ -535,10 +809,11 @@ def main() -> int:
         "architecture_ratio",
         "gap",
     ]
-    print(f'  source = "ANALYSIS_REFERENCE.md §3"')
+    print(f'  source = "{energy_source}"')
     print(f"  op count = {len(df)}")
     print(f"  columns = {cols}")
-    print(f"  FORBIDDEN sources not read (results/analysis_out.csv, runs_synthetic.csv, fixtures)")
+    if source == "section3":
+        print("  FORBIDDEN sources not read (results/analysis_out.csv, runs_synthetic.csv, fixtures)")
     print()
 
     print("=" * 72)
@@ -597,12 +872,21 @@ def main() -> int:
         "trust_flag",
     ]
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-    with OUT_CSV.open("w", encoding="utf-8", newline="") as f:
-        f.write(f"# {PROVENANCE_BANNER}\n")
-    out_df[out_cols].to_csv(OUT_CSV, mode="a", index=False)
+    with out_csv.open("w", encoding="utf-8", newline="") as f:
+        f.write(f"# {provenance}\n")
+    out_df[out_cols].to_csv(out_csv, mode="a", index=False)
 
-    write_markdown(out_df)
-    write_handoff()
+    write_markdown(
+        out_df,
+        out_md=out_md,
+        energy_source=energy_source,
+        provenance_banner=provenance,
+    )
+    write_sheet(df, out_df, out_path=out_sheet, provenance=provenance)
+    if committed_csv_mirror is not None:
+        committed_csv_mirror.write_text(out_csv.read_text(encoding="utf-8"), encoding="utf-8")
+    if write_handoff_flag:
+        write_handoff()
 
     # sign_divergence expectation audit
     expected_sd = {"softmax[s1]", "depthwise_conv2d"}
@@ -614,9 +898,13 @@ def main() -> int:
             r = out_df[out_df["operator"] == op].iloc[0]
             print(f"    {op}: gap={r['gap']} arch={r['architecture_ratio']} sign_divergence={r['sign_divergence']}")
 
-    print(f"\nWrote: {OUT_CSV}")
-    print(f"Wrote: {OUT_MD}")
-    print(f"Wrote: {OUT_HANDOFF}")
+    print(f"\nWrote: {out_csv}")
+    print(f"Wrote: {out_md}")
+    print(f"Wrote: {out_sheet}")
+    if committed_csv_mirror is not None:
+        print(f"Wrote: {committed_csv_mirror}")
+    if write_handoff_flag:
+        print(f"Wrote: {OUT_HANDOFF}")
 
     # Diff summary
     print("\n=== FILE DIFF SUMMARY ===")
