@@ -11,8 +11,8 @@ Outputs:
 
 from __future__ import annotations
 
-import math
 import re
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -44,6 +44,18 @@ EXCLUDE_OPS = {"sra_conv2d", "attn_block_fused"}
 
 # If any identity check deviates by more than this, print a flag.
 IDENTITY_MAX_REL_DEV = 0.005  # 0.5%
+
+FOOTNOTE_SCOPE = (
+    "SCOPE: Single-corner (avg, N=197, D=768). Coverage asymmetry: no operator receives a clean "
+    "3-way matched ranking. Contested-middle ties (TIE_THRESHOLD=0.10) are sensitive to tensor "
+    "dimensions; parameter sweeps could move tied winners (future work, per supervisor sign-off)."
+)
+FOOTNOTE_SOURCE = (
+    "SOURCE: ANALYSIS_REFERENCE.md §3 (validated against primary tower CSVs); "
+    "energy-layer diff 83/83 numeric PASS + 1 expected-N/A, 2026-06-17."
+)
+FOOTNOTE_WRAP_WIDTH = 115
+XLABEL_PAD = 10
 
 
 def _parse_num(token: str) -> float | None:
@@ -205,7 +217,7 @@ def main() -> None:
     bar_h = 0.36
     offset = bar_h / 2
 
-    fig, ax = plt.subplots(figsize=(12.5, max(3.5, 0.42 * len(selected) + 1.0)))
+    fig, ax = plt.subplots(figsize=(12, 8))
 
     color_prec = "#4C78A8"
     color_arch = "#F58518"
@@ -220,14 +232,14 @@ def main() -> None:
     ax.set_xscale("log")
     ax.axvline(1.0, color="black", linestyle="--", linewidth=1.0)
 
-    ax.set_xlabel("ratio (log scale)")
+    ax.set_xlabel("ratio (log scale)", labelpad=XLABEL_PAD)
 
     # Zone labels: data-x left/right of parity line; axes-fraction y (mid stack, not row-anchored).
     blend = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
     ax.text(
         0.72,
         0.5,
-        "INT8 hurts CPU\n/ CPU cheaper",
+        "INT8 hurts CPU / CPU cheaper",
         transform=blend,
         ha="right",
         va="center",
@@ -252,18 +264,18 @@ def main() -> None:
     max_v = max(all_vals)
     ax.set_xlim(max(min_v / 2, 0.3), max_v * 1.2)
 
-    # Footnote / caption suggestion.
-    foot = (
-        "Energies from committed snapshot (ANALYSIS_REFERENCE.md §3); avg corner; ratios recomputed from raw J/op cells.\n"
-        "Regenerate from primary tower CSVs before publication."
+    foot = textwrap.fill(f"{FOOTNOTE_SCOPE}\n\n{FOOTNOTE_SOURCE}", width=FOOTNOTE_WRAP_WIDTH)
+    fig.tight_layout()
+    fig.text(
+        0.01, -0.06, foot,
+        transform=fig.transFigure,
+        va="top", ha="left",
+        fontsize=9, linespacing=1.3, color="#333333",
     )
-    fig.text(0.01, 0.01, foot, ha="left", va="bottom", fontsize=9)
-
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
 
     out_png_str = str(OUT_PNG)
     OUT_PNG.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(OUT_PNG, dpi=200, bbox_inches="tight", pad_inches=0.06)
+    fig.savefig(OUT_PNG, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
     print()

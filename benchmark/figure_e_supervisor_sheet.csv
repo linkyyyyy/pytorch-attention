@@ -1,0 +1,86 @@
+# SUPERVISOR SHEET: per-(operator, engine) at avg corner (N=197, D=768). execution_time_ms = amortized throughput-time (window/iterations), NOT single-shot latency. avg_power_W = gross mean PACKAGE power (not engine-isolated). energy_net_J_per_op = idle-subtracted validated headline (matches STEP4_FOR_SHEET_primary). energy_per_token_J = energy_net / 197. Source: figure_e_operator_engine.csv; 83 numeric rows + 1 N/A; 2026-06-17.
+operator,engine,mechanism,execution_time_ms,avg_power_W,energy_net_J_per_op,energy_per_token_J,trust_flag,deployment_winner
+attn_block_fused[s1],cpu_FP32,COMPUTE_BOUND_DENSE,1.4248,45.495,0.05493762,0.0002788712,,no matched recommendation (npu N/A)
+attn_block_fused[s1],cpu_INT8,COMPUTE_BOUND_DENSE,3.7238,45.444,0.12875022,0.0006535544,,no matched recommendation (npu N/A)
+attn_block_fused[s1],npu_INT8,COMPUTE_BOUND_DENSE,,,,,N/A npu (VAI EP batch mismatch),no matched recommendation (npu N/A)
+attn_block_fused[s1],igpu_FP32,COMPUTE_BOUND_DENSE,1.0757,45.61,0.04130965,0.0002096937,,no matched recommendation (npu N/A)
+attn_score_matmul[s1],cpu_FP32,COMPUTE_BOUND_DENSE,0.0823,45.384,0.00315164,1.59982e-05,,cpu
+attn_score_matmul[s1],cpu_INT8,COMPUTE_BOUND_DENSE,0.124,45.454,0.00429113,2.17824e-05,,cpu
+attn_score_matmul[s1],npu_INT8,COMPUTE_BOUND_DENSE,0.145,45.423,0.0055416,2.813e-05,,cpu
+attn_score_matmul[s1],igpu_FP32,COMPUTE_BOUND_DENSE,0.1531,44.202,0.00566453,2.8754e-05,,cpu
+attn_value_matmul[s1],cpu_FP32,COMPUTE_BOUND_DENSE,0.0788,45.566,0.00303238,1.53928e-05,,cpu
+attn_value_matmul[s1],cpu_INT8,COMPUTE_BOUND_DENSE,0.0855,45.447,0.00295894,1.502e-05,,cpu
+attn_value_matmul[s1],npu_INT8,COMPUTE_BOUND_DENSE,0.1774,45.558,0.00680954,3.45662e-05,,cpu
+attn_value_matmul[s1],igpu_FP32,COMPUTE_BOUND_DENSE,0.1866,45.603,0.00716618,3.63765e-05,,cpu
+avg_pool_token_mixer,cpu_FP32,MEMORY_BOUND,0.1516,25.224,0.00273013,1.38585e-05,,igpu
+avg_pool_token_mixer,cpu_INT8,MEMORY_BOUND,1.674,39.946,0.04987724,0.000253184,LOW-TRUST cpu_int8 (high CV%),igpu
+avg_pool_token_mixer,npu_INT8,MEMORY_BOUND,0.2703,20.592,0.00361731,1.8362e-05,,igpu
+avg_pool_token_mixer,igpu_FP32,MEMORY_BOUND,0.0819,28.176,0.00171798,8.7207e-06,,igpu
+batch_norm,cpu_FP32,MEMORY_BOUND,0.0997,27.696,0.00204235,1.03673e-05,,cpu
+batch_norm,cpu_INT8,MEMORY_BOUND,0.1002,26.895,0.00160501,8.1472e-06,,cpu
+batch_norm,npu_INT8,MEMORY_BOUND,0.1017,26.799,0.00199113,1.01072e-05,,cpu
+batch_norm,igpu_FP32,MEMORY_BOUND,0.1586,32.261,0.00397585,2.0182e-05,,cpu
+depthwise_conv2d,cpu_FP32,MEMORY_BOUND,0.059,45.591,0.00226912,1.15184e-05,,tie (cpu/igpu)
+depthwise_conv2d,cpu_INT8,MEMORY_BOUND,0.4421,41.919,0.01386337,7.03724e-05,,tie (cpu/igpu)
+depthwise_conv2d,npu_INT8,MEMORY_BOUND,0.3225,20.862,0.0044039,2.23548e-05,,tie (cpu/igpu)
+depthwise_conv2d,igpu_FP32,MEMORY_BOUND,0.1028,29.68,0.00230835,1.17175e-05,,tie (cpu/igpu)
+downsample_conv2d,cpu_FP32,COMPUTE_BOUND_DENSE,7.5989,45.486,0.29087935,0.0014765449,,npu
+downsample_conv2d,cpu_INT8,COMPUTE_BOUND_DENSE,12.467,45.454,0.43118397,0.0021887511,,npu
+downsample_conv2d,npu_INT8,COMPUTE_BOUND_DENSE,2.6585,18.725,0.03058911,0.0001552747,,npu
+downsample_conv2d,igpu_FP32,COMPUTE_BOUND_DENSE,3.2724,45.444,0.12512664,0.0006351606,,npu
+ffn_gemm[s2],cpu_FP32,COMPUTE_BOUND_DENSE,1.1009,45.505,0.04217417,0.0002140821,,npu
+ffn_gemm[s2],cpu_INT8,COMPUTE_BOUND_DENSE,2.1063,45.487,0.0731758,0.0003714508,,npu
+ffn_gemm[s2],npu_INT8,COMPUTE_BOUND_DENSE,0.4459,25.597,0.00820034,4.16261e-05,,npu
+ffn_gemm[s2],igpu_FP32,COMPUTE_BOUND_DENSE,0.779,45.55,0.02986713,0.0001516098,,npu
+ffn_gemm[s3],cpu_FP32,COMPUTE_BOUND_DENSE,1.0481,45.457,0.0402329,0.0002042279,,npu
+ffn_gemm[s3],cpu_INT8,COMPUTE_BOUND_DENSE,2.0589,45.563,0.07161984,0.0003635525,,npu
+ffn_gemm[s3],npu_INT8,COMPUTE_BOUND_DENSE,0.6679,22.543,0.01024235,5.19916e-05,,npu
+ffn_gemm[s3],igpu_FP32,COMPUTE_BOUND_DENSE,0.7443,45.576,0.02855854,0.0001449672,,npu
+gelu[s1],cpu_FP32,MEMORY_BOUND,0.0684,45.404,0.00261382,1.32681e-05,,cpu
+gelu[s1],cpu_INT8,MEMORY_BOUND,0.3836,45.58,0.01331948,6.76116e-05,,cpu
+gelu[s1],npu_INT8,MEMORY_BOUND,0.3981,45.553,0.01527148,7.75202e-05,,cpu
+gelu[s1],igpu_FP32,MEMORY_BOUND,0.7488,45.487,0.02867034,0.0001455347,,cpu
+group_norm,cpu_FP32,MEMORY_BOUND,0.1147,44.791,0.00433167,2.19882e-05,,tie (cpu/igpu)
+group_norm,cpu_INT8,MEMORY_BOUND,0.1347,43.716,0.00443257,2.25003e-05,,tie (cpu/igpu)
+group_norm,npu_INT8,MEMORY_BOUND,0.1276,26.006,0.00239877,1.21765e-05,,tie (cpu/igpu)
+group_norm,igpu_FP32,MEMORY_BOUND,0.1354,36.7,0.00399452,2.02767e-05,,tie (cpu/igpu)
+layer_norm[s1],cpu_FP32,MEMORY_BOUND,0.0386,45.485,0.00147835,7.5043e-06,,cpu
+layer_norm[s1],cpu_INT8,MEMORY_BOUND,0.0389,45.469,0.00134652,6.8351e-06,,cpu
+layer_norm[s1],npu_INT8,MEMORY_BOUND,0.0399,45.459,0.00152761,7.7544e-06,,cpu
+layer_norm[s1],igpu_FP32,MEMORY_BOUND,0.121,32.28,0.00303427,1.54024e-05,,cpu
+out_proj_gemm[s1],cpu_FP32,COMPUTE_BOUND_DENSE,0.2991,45.457,0.01146085,5.81769e-05,,npu
+out_proj_gemm[s1],cpu_INT8,COMPUTE_BOUND_DENSE,0.5657,45.455,0.01958419,9.94121e-05,,npu
+out_proj_gemm[s1],npu_INT8,COMPUTE_BOUND_DENSE,0.259,22.54,0.00397157,2.01602e-05,,npu
+out_proj_gemm[s1],igpu_FP32,COMPUTE_BOUND_DENSE,0.2712,42.552,0.00958427,4.86511e-05,,npu
+patch_embed_conv2d,cpu_FP32,COMPUTE_BOUND_DENSE,0.2854,45.561,0.01096707,5.56704e-05,,npu
+patch_embed_conv2d,cpu_INT8,COMPUTE_BOUND_DENSE,0.604,45.504,0.02093966,0.0001062927,,npu
+patch_embed_conv2d,npu_INT8,COMPUTE_BOUND_DENSE,0.559,19.738,0.00700463,3.55565e-05,,npu
+patch_embed_conv2d,igpu_FP32,COMPUTE_BOUND_DENSE,0.2669,45.385,0.01019144,5.17332e-05,,npu
+qkv_proj_gemm[s3],cpu_FP32,COMPUTE_BOUND_DENSE,0.2949,45.513,0.01130596,5.73907e-05,,npu
+qkv_proj_gemm[s3],cpu_INT8,COMPUTE_BOUND_DENSE,0.5672,45.459,0.01964661,9.9729e-05,,npu
+qkv_proj_gemm[s3],npu_INT8,COMPUTE_BOUND_DENSE,0.2622,22.186,0.00392675,1.99328e-05,,npu
+qkv_proj_gemm[s3],igpu_FP32,COMPUTE_BOUND_DENSE,0.2707,42.595,0.00957793,4.86189e-05,,npu
+qkv_proj_gemm[s4],cpu_FP32,COMPUTE_BOUND_DENSE,0.2982,45.489,0.01148461,5.82975e-05,,npu
+qkv_proj_gemm[s4],cpu_INT8,COMPUTE_BOUND_DENSE,0.5682,45.433,0.01963756,9.96831e-05,,npu
+qkv_proj_gemm[s4],npu_INT8,COMPUTE_BOUND_DENSE,0.2581,22.576,0.00396718,2.0138e-05,,npu
+qkv_proj_gemm[s4],igpu_FP32,COMPUTE_BOUND_DENSE,0.2718,45.116,0.01030484,5.23088e-05,,npu
+qkv_proj_gemm[s5],cpu_FP32,COMPUTE_BOUND_DENSE,0.2978,45.5,0.01146992,5.8223e-05,,npu
+qkv_proj_gemm[s5],cpu_INT8,COMPUTE_BOUND_DENSE,0.5764,45.475,0.01999755,0.0001015104,,npu
+qkv_proj_gemm[s5],npu_INT8,COMPUTE_BOUND_DENSE,0.263,22.361,0.00398548,2.02309e-05,,npu
+qkv_proj_gemm[s5],igpu_FP32,COMPUTE_BOUND_DENSE,0.2695,45.44,0.01030189,5.22938e-05,,npu
+residual_add[s1],cpu_FP32,MEMORY_BOUND,0.0169,43.174,0.00061002,3.0966e-06,,cpu
+residual_add[s1],cpu_INT8,MEMORY_BOUND,0.068,43.157,0.00219533,1.11438e-05,,cpu
+residual_add[s1],npu_INT8,MEMORY_BOUND,0.2298,21.693,0.00332821,1.68944e-05,,cpu
+residual_add[s1],igpu_FP32,MEMORY_BOUND,0.1039,26.93,0.00204936,1.04028e-05,,cpu
+softmax[s1],cpu_FP32,MEMORY_BOUND,0.0393,45.465,0.00150382,7.6336e-06,,cpu
+softmax[s1],cpu_INT8,MEMORY_BOUND,1.1588,45.476,0.0400869,0.0002034868,,cpu
+softmax[s1],npu_INT8,MEMORY_BOUND,0.4204,23.801,0.00697618,3.54121e-05,,cpu
+softmax[s1],igpu_FP32,MEMORY_BOUND,0.2166,36.398,0.00632196,3.20912e-05,,cpu
+sra_conv2d,cpu_FP32,COMPUTE_BOUND_DENSE,4.8924,45.426,0.1869994,0.0009492356,,EXCLUDED (npu INT8 untrusted)
+sra_conv2d,cpu_INT8,COMPUTE_BOUND_DENSE,15.1333,45.532,0.52448538,0.0026623623,,EXCLUDED (npu INT8 untrusted)
+sra_conv2d,npu_INT8,COMPUTE_BOUND_DENSE,11.9252,45.385,0.45537818,0.0023115644,UNTRUSTED npu INT8 (CPU fallback),EXCLUDED (npu INT8 untrusted)
+sra_conv2d,igpu_FP32,COMPUTE_BOUND_DENSE,3.3274,45.273,0.12665876,0.0006429379,,EXCLUDED (npu INT8 untrusted)
+xcit_cov_matmul,cpu_FP32,COMPUTE_BOUND_DENSE,0.0354,45.503,0.00135714,6.889e-06,,cpu
+xcit_cov_matmul,cpu_INT8,COMPUTE_BOUND_DENSE,0.0502,45.517,0.00174077,8.8364e-06,,cpu
+xcit_cov_matmul,npu_INT8,COMPUTE_BOUND_DENSE,0.0896,45.646,0.0034516,1.75208e-05,,cpu
+xcit_cov_matmul,igpu_FP32,COMPUTE_BOUND_DENSE,0.1567,35.74,0.00447069,2.26939e-05,,cpu
