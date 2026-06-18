@@ -1,6 +1,6 @@
 # Step 4 — Operator Engine Mapping
 
-> **PROVENANCE: energies from primary tower CSVs (analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) at full precision.**
+> **PROVENANCE: energies from primary tower CSVs (analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) at full precision. Full-precision publication table; energy-layer diff 83/83 numeric PASS + 1 expected-N/A, 2026-06-17. VALIDATED status: see PROJECT_CONTEXT.md §8.**
 
 Operator-level deployment recommendations (avg corner). **No model-level claims.**
 

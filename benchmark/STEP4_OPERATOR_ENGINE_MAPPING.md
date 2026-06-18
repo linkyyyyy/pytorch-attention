@@ -1,6 +1,6 @@
 # Step 4 — Operator Engine Mapping
 
-> **PROVENANCE: energies from ANALYSIS_REFERENCE.md §3 (committed production snapshot), NOT primary results/ CSVs. Paper-grade table must be regenerated from tower CSVs (analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) before publication.**
+> **PROVENANCE: energies from ANALYSIS_REFERENCE.md §3 (committed production snapshot), NOT primary results/ CSVs. §3 is the committed production snapshot, validated as the rounded twin of the full-precision primary tower CSVs (energy-layer diff 83/83 numeric PASS + 1 expected-N/A, 2026-06-17). This is the §3-rounded transcription table; the full-precision publication table is STEP4_OPERATOR_ENGINE_MAPPING_primary.md. VALIDATED status and supervisor sign-off: see PROJECT_CONTEXT.md §8.**
 
 Operator-level deployment recommendations (avg corner). **No model-level claims.**
 
