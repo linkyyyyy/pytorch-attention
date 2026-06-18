@@ -662,6 +662,12 @@ def write_sheet(
 
 
 def write_handoff() -> None:
+    """Emit STEP4_HANDOFF.md from the embedded PROVISIONAL template (legacy).
+
+    STEP4_HANDOFF.md is a CURATED VALIDATED bootstrap doc — not a routine render target.
+    Do not auto-regenerate; the hardcoded template here is PROVISIONAL and stale.
+    Call only via ``--emit-handoff`` (default OFF).
+    """
     text = """# Step 4 handoff — paste into next Claude prompt, then delete
 
 **Branch:** `uProfAnalysis` | **Scope:** operator-level only, avg corner, no model claims
@@ -773,6 +779,12 @@ def main() -> int:
         default="section3",
         help="Energy source: §3 markdown snapshot (default) or primary tower CSVs",
     )
+    parser.add_argument(
+        "--emit-handoff",
+        action="store_true",
+        default=False,
+        help="Write STEP4_HANDOFF.md from embedded PROVISIONAL template (default: off; handoff is curated)",
+    )
     args = parser.parse_args()
     source = args.source
 
@@ -782,7 +794,6 @@ def main() -> int:
         out_sheet = OUT_SHEET
         provenance = PROVENANCE_BANNER_SECTION3
         energy_source = "ANALYSIS_REFERENCE.md §3"
-        write_handoff_flag = True
         committed_csv_mirror = None
     else:
         out_csv = OUT_CSV_PRIMARY
@@ -790,7 +801,6 @@ def main() -> int:
         out_sheet = OUT_SHEET_PRIMARY
         provenance = PROVENANCE_BANNER_PRIMARY
         energy_source = "primary tower CSVs (full precision)"
-        write_handoff_flag = False
         committed_csv_mirror = OUT_CSV_PRIMARY_COMMITTED
 
     print("=" * 72)
@@ -885,7 +895,8 @@ def main() -> int:
     write_sheet(df, out_df, out_path=out_sheet, provenance=provenance)
     if committed_csv_mirror is not None:
         committed_csv_mirror.write_text(out_csv.read_text(encoding="utf-8"), encoding="utf-8")
-    if write_handoff_flag:
+    # STEP4_HANDOFF.md is curated VALIDATED — not a routine render target; template is PROVISIONAL/stale.
+    if args.emit_handoff:
         write_handoff()
 
     # sign_divergence expectation audit
@@ -903,7 +914,7 @@ def main() -> int:
     print(f"Wrote: {out_sheet}")
     if committed_csv_mirror is not None:
         print(f"Wrote: {committed_csv_mirror}")
-    if write_handoff_flag:
+    if args.emit_handoff:
         print(f"Wrote: {OUT_HANDOFF}")
 
     # Diff summary
