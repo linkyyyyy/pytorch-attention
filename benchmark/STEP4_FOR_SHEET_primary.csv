@@ -1,4 +1,4 @@
-# PROVENANCE: energies from primary tower CSVs (analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) at full precision.
+# PROVENANCE: energies from primary tower CSVs (analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) at full precision. Full-precision publication table; energy-layer diff 83/83 numeric PASS + 1 expected-N/A, 2026-06-17. VALIDATED status: see PROJECT_CONTEXT.md §8.
 operator,shape_class,cpu_FP32,cpu_INT8,npu_INT8,igpu_FP32,precision,architecture_ratio,gap,mechanism,winner,margin_pct,is_tie,sign_divergence,diverges_deployment,naive_winner,trust_flag
 attn_block_fused[s1],avg,0.054937621923803602,0.1287502205265818,,0.041309650317995099,0.42669924524487446,,,COMPUTE_BOUND_DENSE,no matched recommendation (npu N/A),,False,N/A,N/A,igpu,N/A npu
 attn_score_matmul[s1],avg,0.0031516411135501,0.0042911349993732997,0.0055416014046113004,0.0056645328166792996,0.73445396474601299,0.7743492694733588,0.56872389106288723,COMPUTE_BOUND_DENSE,cpu,29.1407,False,False,False,cpu,

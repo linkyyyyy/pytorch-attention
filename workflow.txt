@@ -1,0 +1,827 @@
+[MEASURE] sra_conv2d_npu engine=npu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=sra_conv2d opset=20 (read from sra_conv2d.onnx)
+Profile Elapse Time in ms: 2552
+[QUARK-INFO]: Checking custom ops library ...
+
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+
+[QUARK-WARNING]: Custom ops library compilation failed: [WinError 5] Access is denied: 'C:\\ProgramData\\miniconda3\\envs\\ryzen-ai-1.6.0\\Lib\\site-packages\\quark\\onnx\\operators\\custom_ops\\lib'.
+
+[QUARK-INFO]: Checked custom ops library.
+Profile Elapse Time in ms: 2857
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+[QUARK_INFO]: Time information:
+2026-06-11 16:40:27.737656
+[QUARK_INFO]: OS and CPU information:
+                                        system --- Windows
+                                          node --- ryzenai
+                                       release --- 11
+                                       version --- 10.0.26200
+                                       machine --- AMD64
+                                     processor --- AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD
+[QUARK_INFO]: Tools version information:
+                                        python --- 3.12.11
+                                          onnx --- 1.18.0
+                                   onnxruntime --- 1.23.0.dev20250928
+                                    quark.onnx --- 0.10+db671e3+db671e3
+[QUARK_INFO]: Quantized Configuration information:
+                                   model_input --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\sra_conv2d.onnx
+                                  model_output --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\sra_conv2d_xint8.onnx
+                       calibration_data_reader --- <npu.path.quantize_op_to_xint8.<locals>.CalibReader object at 0x0000015C9012A630>
+                         calibration_data_path --- None
+                                  quant_format --- QDQ
+                                   input_nodes --- []
+                                  output_nodes --- []
+                          op_types_to_quantize --- []
+                    extra_op_types_to_quantize --- []
+                                   per_channel --- False
+                                  reduce_range --- False
+                               activation_type --- QUInt8
+                                   weight_type --- QInt8
+                             nodes_to_quantize --- []
+                              nodes_to_exclude --- []
+                          subgraphs_to_exclude --- []
+                                optimize_model --- True
+                      use_external_data_format --- False
+                              calibrate_method --- PowerOfTwoMethod.MinMSE
+                           execution_providers --- ['CPUExecutionProvider']
+                                enable_npu_cnn --- True
+                        enable_npu_transformer --- False
+                     specific_tensor_precision --- False
+                                    debug_mode --- False
+                          convert_fp16_to_fp32 --- False
+                          convert_nchw_to_nhwc --- False
+                                   include_cle --- True
+                                    include_sq --- False
+                              include_rotation --- False
+                               include_fast_ft --- False
+                                 extra_options --- {'ActivationSymmetric': True}
+Profile Elapse Time in ms: 5094
+[QUARK-INFO]: The input ONNX model can create InferenceSession successfully
+
+[QUARK-INFO]: Obtained calibration data with 16 iters
+Profile Elapse Time in ms: 6109
+[QUARK-INFO]: Removed initializers from input
+Profile Elapse Time in ms: 7634
+[QUARK-INFO]: Simplified model sucessfully
+
+[QUARK-INFO]: Loading model...
+Profile Elapse Time in ms: 9461
+[QUARK-INFO]: The input ONNX model can run inference successfully
+
+[QUARK-INFO]: Start CrossLayerEqualization...
+
+[QUARK-INFO]: CrossLayerEqualization pattern num: 0
+Profile Elapse Time in ms: 9664
+[QUARK-INFO]: Total CrossLayerEqualization steps: 1
+
+[QUARK-INFO]: CrossLayerEqualization Done.
+Profile Elapse Time in ms: 10882
+[QUARK-INFO]: optimize the model for better hardware compatibility.
+Profile Elapse Time in ms: 12911
+[QUARK-INFO]: Start calibration...
+Profile Elapse Time in ms: 13012
+[QUARK-INFO]: Start collecting data, runtime depends on your model size and the number of calibration dataset.
+Profile Elapse Time in ms: 13216
+[QUARK-INFO]: Finding optimal threshold for each tensor using PowerOfTwoMethod.MinMSE algorithm ...
+
+[QUARK-INFO]: Use all calibration data to calculate min mse
+Computing range:   0%|                                                                       | 0/2 [00:00<?, ?tensor/s]PComputing range: 100%|███████████████████████████████████████████████████████████████| 2/2 [00:01<00:00,  1.20tensor/s]
+
+[QUARK-INFO]: Finished the calibration of PowerOfTwoMethod.MinMSE which costs 2.0s
+Profile Elapse Time in ms: 17274
+[QUARK-INFO]: Remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu).
+
+[QUARK-INFO]: Adjust the quantize info to meet the compiler constraints
+
+[QUARK-INFO]: The operation types and their corresponding quantities of the input float model is shown in the table below.
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Op Type              ┃ Float Model                                                                           ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Conv                 │ 1                                                                                     │
+├──────────────────────┼───────────────────────────────────────────────────────────────────────────────────────┤
+│ Quantized model path │ C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\sra_conv2d_xint8.onnx │
+└──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────┘
+
+[QUARK-INFO]: The quantized information for all operation types is shown in the table below.
+
+[QUARK-INFO]: The discrepancy between the operation types in the quantized model and the float model is due to the application of graph optimization.
+┏━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┓
+┃ Op Type ┃ Activation ┃ Weights ┃ Bias    ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━┩
+│ Conv    │ UINT8(1)   │ INT8(1) │ INT8(1) │
+└─────────┴────────────┴─────────┴─────────┘
+[quark] sra_conv2d_xint8.onnx  (XINT8, synthetic calib n=16)
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20260611 16:40:42.281530 18728 register_ssmlp.cpp:124] Registering Custom Operator: com.amd:SSMLP
+I20260611 16:40:42.281530 18728 register_matmulnbits.cpp:110] Registering Custom Operator: com.amd:MatMulNBits
+I20260611 16:40:42.301654 18728 vitisai_compile_model.cpp:1266] Vitis AI EP Load ONNX Model Success
+I20260611 16:40:42.301654 18728 vitisai_compile_model.cpp:1267] Graph Input Node Name/Shape (1)
+I20260611 16:40:42.301654 18728 vitisai_compile_model.cpp:1271]          input : [1x768x56x56]
+I20260611 16:40:42.301654 18728 vitisai_compile_model.cpp:1277] Graph Output Node Name/Shape (1)
+I20260611 16:40:42.301654 18728 vitisai_compile_model.cpp:1281]          output : [1x768x7x7]
+[Vitis AI EP] No. of Operators :   CPU     1 VITIS_EP_CPU     6
+2026-06-11 16:40:50.0188773 [W:onnxruntime:, session_state.cc:1307 onnxruntime::VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.
+2026-06-11 16:40:50.0248591 [W:onnxruntime:, session_state.cc:1309 onnxruntime::VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.
+[vai] partition summary not found in compile log
+[vai] providers: ['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[EP_CHECK] run_id=sra_conv2d_npu_r0 VAI_PARTITION: not captured in compile log
+[MEASURE_SESSION] run_id=sra_conv2d_npu_r0 int8=sra_conv2d_xint8.onnx providers=['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[WARMUP_START] run_id=sra_conv2d_npu_r0 mode=measure engine=npu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=sra_conv2d_npu_r0
+[WINDOW_OPEN] run_id=sra_conv2d_npu_r0 t_start=1781185253.031203 mode=measure engine=npu operator=sra_conv2d
+[WINDOW_CLOSE] run_id=sra_conv2d_npu_r0 t_end=1781185263.032265 iterations=850 wall_time_s=10.001470
+Profile Elapse Time in ms: 37225
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\sra_conv2d_npu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\sra_conv2d_npu\timechart.csv
+
+[MEASURE] avg_pool_token_mixer_cpu engine=cpu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=avg_pool_token_mixer opset=20 (read from avg_pool_token_mixer.onnx)
+[PROFILE_SESSION] providers=['CPUExecutionProvider']
+[EP_CHECK] run_id=avg_pool_token_mixer_cpu_r0 EP_OK: intended=CPUExecutionProvider
+[MEASURE_SESSION] run_id=avg_pool_token_mixer_cpu_r0 providers=['CPUExecutionProvider']
+[WARMUP_START] run_id=avg_pool_token_mixer_cpu_r0 mode=measure engine=cpu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=avg_pool_token_mixer_cpu_r0
+[WINDOW_OPEN] run_id=avg_pool_token_mixer_cpu_r0 t_start=1781185273.609560 mode=measure engine=cpu operator=avg_pool_token_mixer
+[WINDOW_CLOSE] run_id=avg_pool_token_mixer_cpu_r0 t_end=1781185283.617243 iterations=61448 wall_time_s=10.000120
+Profile Elapse Time in ms: 13863
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\avg_pool_token_mixer_cpu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\avg_pool_token_mixer_cpu\timechart.csv
+
+[MEASURE] avg_pool_token_mixer_igpu engine=igpu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=avg_pool_token_mixer opset=20 (read from avg_pool_token_mixer.onnx)
+[PROFILE_SESSION] providers=['DmlExecutionProvider', 'CPUExecutionProvider']
+[DML_IO] OrtValue device string 'dml' OK (device_id=0)
+[EP_CHECK] run_id=avg_pool_token_mixer_igpu_r0 EP_OK: intended=DmlExecutionProvider
+[MEASURE_SESSION] run_id=avg_pool_token_mixer_igpu_r0 providers=['DmlExecutionProvider', 'CPUExecutionProvider']
+[DML_IO] run_id=avg_pool_token_mixer_igpu_r0 inference path=iobinding+dml
+[WARMUP_START] run_id=avg_pool_token_mixer_igpu_r0 mode=measure engine=igpu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=avg_pool_token_mixer_igpu_r0
+[WINDOW_OPEN] run_id=avg_pool_token_mixer_igpu_r0 t_start=1781185294.746697 mode=measure engine=igpu operator=avg_pool_token_mixer
+[WINDOW_CLOSE] run_id=avg_pool_token_mixer_igpu_r0 t_end=1781185304.747274 iterations=111039 wall_time_s=10.000057
+Profile Elapse Time in ms: 14011
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\avg_pool_token_mixer_igpu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\avg_pool_token_mixer_igpu\timechart.csv
+
+[MEASURE] avg_pool_token_mixer_npu engine=npu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=avg_pool_token_mixer opset=20 (read from avg_pool_token_mixer.onnx)
+Profile Elapse Time in ms: 2042
+[QUARK-INFO]: Checking custom ops library ...
+
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+
+[QUARK-WARNING]: Custom ops library compilation failed: [WinError 5] Access is denied: 'C:\\ProgramData\\miniconda3\\envs\\ryzen-ai-1.6.0\\Lib\\site-packages\\quark\\onnx\\operators\\custom_ops\\lib'.
+
+[QUARK-INFO]: Checked custom ops library.
+Profile Elapse Time in ms: 2349
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+[QUARK_INFO]: Time information:
+2026-06-11 16:41:53.464373
+[QUARK_INFO]: OS and CPU information:
+                                        system --- Windows
+                                          node --- ryzenai
+                                       release --- 11
+                                       version --- 10.0.26200
+                                       machine --- AMD64
+                                     processor --- AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD
+[QUARK_INFO]: Tools version information:
+                                        python --- 3.12.11
+                                          onnx --- 1.18.0
+                                   onnxruntime --- 1.23.0.dev20250928
+                                    quark.onnx --- 0.10+db671e3+db671e3
+[QUARK_INFO]: Quantized Configuration information:
+                                   model_input --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\avg_pool_token_mixer.onnx
+                                  model_output --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\avg_pool_token_mixer_xint8.onnx
+                       calibration_data_reader --- <npu.path.quantize_op_to_xint8.<locals>.CalibReader object at 0x000001E563A32120>
+                         calibration_data_path --- None
+                                  quant_format --- QDQ
+                                   input_nodes --- []
+                                  output_nodes --- []
+                          op_types_to_quantize --- []
+                    extra_op_types_to_quantize --- []
+                                   per_channel --- False
+                                  reduce_range --- False
+                               activation_type --- QUInt8
+                                   weight_type --- QInt8
+                             nodes_to_quantize --- []
+                              nodes_to_exclude --- []
+                          subgraphs_to_exclude --- []
+                                optimize_model --- True
+                      use_external_data_format --- False
+                              calibrate_method --- PowerOfTwoMethod.MinMSE
+                           execution_providers --- ['CPUExecutionProvider']
+                                enable_npu_cnn --- True
+                        enable_npu_transformer --- False
+                     specific_tensor_precision --- False
+                                    debug_mode --- False
+                          convert_fp16_to_fp32 --- False
+                          convert_nchw_to_nhwc --- False
+                                   include_cle --- True
+                                    include_sq --- False
+                              include_rotation --- False
+                               include_fast_ft --- False
+                                 extra_options --- {'ActivationSymmetric': True}
+
+[QUARK-INFO]: The input ONNX model can create InferenceSession successfully
+
+[QUARK-INFO]: Obtained calibration data with 16 iters
+
+[QUARK-INFO]: Removed initializers from input
+Profile Elapse Time in ms: 2452
+[QUARK-INFO]: Simplified model sucessfully
+
+[QUARK-INFO]: Loading model...
+
+[QUARK-INFO]: The input ONNX model can run inference successfully
+
+[QUARK-INFO]: Start CrossLayerEqualization...
+
+[QUARK-INFO]: CrossLayerEqualization pattern num: 0
+
+[QUARK-INFO]: Total CrossLayerEqualization steps: 1
+
+[QUARK-INFO]: CrossLayerEqualization Done.
+
+[QUARK-INFO]: optimize the model for better hardware compatibility.
+
+[QUARK-INFO]: Start calibration...
+
+[QUARK-INFO]: Start collecting data, runtime depends on your model size and the number of calibration dataset.
+
+[QUARK-INFO]: Finding optimal threshold for each tensor using PowerOfTwoMethod.MinMSE algorithm ...
+
+[QUARK-INFO]: Use all calibration data to calculate min mse
+Computing range:   0%|                                                                       | 0/2 [00:00<?, ?tensor/s]PComputing range: 100%|███████████████████████████████████████████████████████████████| 2/2 [00:00<00:00, 18.55tensor/s]
+
+[QUARK-INFO]: Finished the calibration of PowerOfTwoMethod.MinMSE which costs 0.1s
+
+[QUARK-INFO]: Remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu).
+
+[QUARK-INFO]: Rescale AveragePool /pool/AveragePool with factor 1.0 to simulate DPU behavior.
+
+[QUARK-INFO]: Adjust the quantize info to meet the compiler constraints
+
+[QUARK-INFO]: Input pos of pooling layer /pool/AveragePool is 5. Output pos of pooling layer /pool/AveragePool is 6.Modify opos from 6 to 5.
+
+[QUARK-INFO]: Adjust the quantize info to meet the compiler constraints
+
+[QUARK-INFO]: The operation types and their corresponding quantities of the input float model is shown in the table below.
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Op Type              ┃ Float Model                                                                                   ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ AveragePool          │ 1                                                                                             │
+├──────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Quantized model path │ C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\avg_pool_token_mixer_xint8.o… │
+└──────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────┘
+
+[QUARK-INFO]: The quantized information for all operation types is shown in the table below.
+
+[QUARK-INFO]: The discrepancy between the operation types in the quantized model and the float model is due to the application of graph optimization.
+┏━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━┓
+┃ Op Type     ┃ Activation ┃ Weights ┃ Bias ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━┩
+│ AveragePool │ UINT8(1)   │         │      │
+└─────────────┴────────────┴─────────┴──────┘
+[quark] avg_pool_token_mixer_xint8.onnx  (XINT8, synthetic calib n=16)
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20260611 16:41:53.770936  3716 register_ssmlp.cpp:124] Registering Custom Operator: com.amd:SSMLP
+I20260611 16:41:53.770936  3716 register_matmulnbits.cpp:110] Registering Custom Operator: com.amd:MatMulNBits
+I20260611 16:41:53.781164  3716 vitisai_compile_model.cpp:1266] Vitis AI EP Load ONNX Model Success
+I20260611 16:41:53.781164  3716 vitisai_compile_model.cpp:1267] Graph Input Node Name/Shape (1)
+I20260611 16:41:53.781164  3716 vitisai_compile_model.cpp:1271]          input : [1x768x14x14]
+I20260611 16:41:53.781164  3716 vitisai_compile_model.cpp:1277] Graph Output Node Name/Shape (1)
+I20260611 16:41:53.781164  3716 vitisai_compile_model.cpp:1281]          output : [1x768x7x7]
+Using TXN FORMAT 0.1in ms: 3369
+[Vitis AI EP] No. of Operators :   NPU     3 VITIS_EP_CPU     2
+[Vitis AI EP] No. of Subgraphs :   NPU     1 Actually running on NPU      1
+[vai] partition summary not found in compile log
+[vai] providers: ['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[EP_CHECK] run_id=avg_pool_token_mixer_npu_r0 VAI_PARTITION: not captured in compile log
+[MEASURE_SESSION] run_id=avg_pool_token_mixer_npu_r0 int8=avg_pool_token_mixer_xint8.onnx providers=['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[WARMUP_START] run_id=avg_pool_token_mixer_npu_r0 mode=measure engine=npu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=avg_pool_token_mixer_npu_r0
+[WINDOW_OPEN] run_id=avg_pool_token_mixer_npu_r0 t_start=1781185317.627506 mode=measure engine=npu operator=avg_pool_token_mixer
+[WINDOW_CLOSE] run_id=avg_pool_token_mixer_npu_r0 t_end=1781185327.631719 iterations=36992 wall_time_s=10.000236
+Profile Elapse Time in ms: 15889
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\avg_pool_token_mixer_npu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\avg_pool_token_mixer_npu\timechart.csv
+
+[MEASURE] depthwise_conv2d_cpu engine=cpu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=depthwise_conv2d opset=20 (read from depthwise_conv2d.onnx)
+[PROFILE_SESSION] providers=['CPUExecutionProvider']
+[EP_CHECK] run_id=depthwise_conv2d_cpu_r0 EP_OK: intended=CPUExecutionProvider
+[MEASURE_SESSION] run_id=depthwise_conv2d_cpu_r0 providers=['CPUExecutionProvider']
+[WARMUP_START] run_id=depthwise_conv2d_cpu_r0 mode=measure engine=cpu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=depthwise_conv2d_cpu_r0
+[WINDOW_OPEN] run_id=depthwise_conv2d_cpu_r0 t_start=1781185338.647931 mode=measure engine=cpu operator=depthwise_conv2d
+[WINDOW_CLOSE] run_id=depthwise_conv2d_cpu_r0 t_end=1781185348.644377 iterations=183602 wall_time_s=10.000051
+Profile Elapse Time in ms: 13884
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\depthwise_conv2d_cpu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\depthwise_conv2d_cpu\timechart.csv
+
+[MEASURE] depthwise_conv2d_igpu engine=igpu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=depthwise_conv2d opset=20 (read from depthwise_conv2d.onnx)
+[PROFILE_SESSION] providers=['DmlExecutionProvider', 'CPUExecutionProvider']
+[DML_IO] OrtValue device string 'dml' OK (device_id=0)
+[EP_CHECK] run_id=depthwise_conv2d_igpu_r0 EP_OK: intended=DmlExecutionProvider
+[MEASURE_SESSION] run_id=depthwise_conv2d_igpu_r0 providers=['DmlExecutionProvider', 'CPUExecutionProvider']
+[DML_IO] run_id=depthwise_conv2d_igpu_r0 inference path=iobinding+dml
+[WARMUP_START] run_id=depthwise_conv2d_igpu_r0 mode=measure engine=igpu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=depthwise_conv2d_igpu_r0
+[WINDOW_OPEN] run_id=depthwise_conv2d_igpu_r0 t_start=1781185359.855489 mode=measure engine=igpu operator=depthwise_conv2d
+[WINDOW_CLOSE] run_id=depthwise_conv2d_igpu_r0 t_end=1781185369.855013 iterations=93232 wall_time_s=10.000001
+Profile Elapse Time in ms: 14013
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\depthwise_conv2d_igpu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\depthwise_conv2d_igpu\timechart.csv
+
+[MEASURE] depthwise_conv2d_npu engine=npu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=depthwise_conv2d opset=20 (read from depthwise_conv2d.onnx)
+Profile Elapse Time in ms: 2041
+[QUARK-INFO]: Checking custom ops library ...
+
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+
+[QUARK-WARNING]: Custom ops library compilation failed: [WinError 5] Access is denied: 'C:\\ProgramData\\miniconda3\\envs\\ryzen-ai-1.6.0\\Lib\\site-packages\\quark\\onnx\\operators\\custom_ops\\lib'.
+
+[QUARK-INFO]: Checked custom ops library.
+Profile Elapse Time in ms: 2345
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+[QUARK_INFO]: Time information:
+2026-06-11 16:42:58.535409
+[QUARK_INFO]: OS and CPU information:
+                                        system --- Windows
+                                          node --- ryzenai
+                                       release --- 11
+                                       version --- 10.0.26200
+                                       machine --- AMD64
+                                     processor --- AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD
+[QUARK_INFO]: Tools version information:
+                                        python --- 3.12.11
+                                          onnx --- 1.18.0
+                                   onnxruntime --- 1.23.0.dev20250928
+                                    quark.onnx --- 0.10+db671e3+db671e3
+[QUARK_INFO]: Quantized Configuration information:
+                                   model_input --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\depthwise_conv2d.onnx
+                                  model_output --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\depthwise_conv2d_xint8.onnx
+                       calibration_data_reader --- <npu.path.quantize_op_to_xint8.<locals>.CalibReader object at 0x0000020EC3E99DF0>
+                         calibration_data_path --- None
+                                  quant_format --- QDQ
+                                   input_nodes --- []
+                                  output_nodes --- []
+                          op_types_to_quantize --- []
+                    extra_op_types_to_quantize --- []
+                                   per_channel --- False
+                                  reduce_range --- False
+                               activation_type --- QUInt8
+                                   weight_type --- QInt8
+                             nodes_to_quantize --- []
+                              nodes_to_exclude --- []
+                          subgraphs_to_exclude --- []
+                                optimize_model --- True
+                      use_external_data_format --- False
+                              calibrate_method --- PowerOfTwoMethod.MinMSE
+                           execution_providers --- ['CPUExecutionProvider']
+                                enable_npu_cnn --- True
+                        enable_npu_transformer --- False
+                     specific_tensor_precision --- False
+                                    debug_mode --- False
+                          convert_fp16_to_fp32 --- False
+                          convert_nchw_to_nhwc --- False
+                                   include_cle --- True
+                                    include_sq --- False
+                              include_rotation --- False
+                               include_fast_ft --- False
+                                 extra_options --- {'ActivationSymmetric': True}
+
+[QUARK-INFO]: The input ONNX model can create InferenceSession successfully
+
+[QUARK-INFO]: Obtained calibration data with 16 iters
+
+[QUARK-INFO]: Removed initializers from input
+
+[QUARK-INFO]: Simplified model sucessfully
+
+[QUARK-INFO]: Loading model...
+Profile Elapse Time in ms: 2549
+[QUARK-INFO]: The input ONNX model can run inference successfully
+
+[QUARK-INFO]: Start CrossLayerEqualization...
+
+[QUARK-INFO]: CrossLayerEqualization pattern num: 0
+
+[QUARK-INFO]: Total CrossLayerEqualization steps: 1
+
+[QUARK-INFO]: CrossLayerEqualization Done.
+
+[QUARK-INFO]: optimize the model for better hardware compatibility.
+
+[QUARK-INFO]: Start calibration...
+
+[QUARK-INFO]: Start collecting data, runtime depends on your model size and the number of calibration dataset.
+
+[QUARK-INFO]: Finding optimal threshold for each tensor using PowerOfTwoMethod.MinMSE algorithm ...
+
+[QUARK-INFO]: Use all calibration data to calculate min mse
+Computing range:   0%|                                                                       | 0/2 [00:00<?, ?tensor/s]PComputing range: 100%|███████████████████████████████████████████████████████████████| 2/2 [00:00<00:00, 10.72tensor/s]
+
+[QUARK-INFO]: Finished the calibration of PowerOfTwoMethod.MinMSE which costs 0.2s
+
+[QUARK-INFO]: Remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu).
+
+[QUARK-INFO]: Adjust the quantize info to meet the compiler constraints
+Profile Elapse Time in ms: 2857
+[QUARK-INFO]: The operation types and their corresponding quantities of the input float model is shown in the table below.
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Op Type              ┃ Float Model                                                                                 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Conv                 │ 1                                                                                           │
+├──────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Quantized model path │ C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\depthwise_conv2d_xint8.onnx │
+└──────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+[QUARK-INFO]: The quantized information for all operation types is shown in the table below.
+
+[QUARK-INFO]: The discrepancy between the operation types in the quantized model and the float model is due to the application of graph optimization.
+┏━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┓
+┃ Op Type ┃ Activation ┃ Weights ┃ Bias    ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━┩
+│ Conv    │ UINT8(1)   │ INT8(1) │ INT8(1) │
+└─────────┴────────────┴─────────┴─────────┘
+[quark] depthwise_conv2d_xint8.onnx  (XINT8, synthetic calib n=16)
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20260611 16:42:59.148056 16688 register_ssmlp.cpp:124] Registering Custom Operator: com.amd:SSMLP
+I20260611 16:42:59.148056 16688 register_matmulnbits.cpp:110] Registering Custom Operator: com.amd:MatMulNBits
+I20260611 16:42:59.158113 16688 vitisai_compile_model.cpp:1266] Vitis AI EP Load ONNX Model Success
+I20260611 16:42:59.158113 16688 vitisai_compile_model.cpp:1267] Graph Input Node Name/Shape (1)
+I20260611 16:42:59.158113 16688 vitisai_compile_model.cpp:1271]          input : [1x768x14x14]
+I20260611 16:42:59.158113 16688 vitisai_compile_model.cpp:1277] Graph Output Node Name/Shape (1)
+I20260611 16:42:59.158113 16688 vitisai_compile_model.cpp:1281]          output : [1x768x14x14]
+Using TXN FORMAT 0.1in ms: 3669
+[Vitis AI EP] No. of Operators :   NPU     5 VITIS_EP_CPU     2
+[Vitis AI EP] No. of Subgraphs :   NPU     1 Actually running on NPU      1
+[vai] partition summary not found in compile log
+[vai] providers: ['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[EP_CHECK] run_id=depthwise_conv2d_npu_r0 VAI_PARTITION: not captured in compile log
+[MEASURE_SESSION] run_id=depthwise_conv2d_npu_r0 int8=depthwise_conv2d_xint8.onnx providers=['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[WARMUP_START] run_id=depthwise_conv2d_npu_r0 mode=measure engine=npu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=depthwise_conv2d_npu_r0
+[WINDOW_OPEN] run_id=depthwise_conv2d_npu_r0 t_start=1781185382.987785 mode=measure engine=npu operator=depthwise_conv2d
+[WINDOW_CLOSE] run_id=depthwise_conv2d_npu_r0 t_end=1781185392.982621 iterations=31057 wall_time_s=10.000292
+Profile Elapse Time in ms: 16187
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\depthwise_conv2d_npu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\depthwise_conv2d_npu\timechart.csv
+
+[MEASURE] attn_block_fused_cpu engine=cpu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=attn_block_fused opset=20 (read from attn_block_fused.onnx)
+[PROFILE_SESSION] providers=['CPUExecutionProvider']
+[EP_CHECK] run_id=attn_block_fused_cpu_r0 EP_OK: intended=CPUExecutionProvider
+[MEASURE_SESSION] run_id=attn_block_fused_cpu_r0 providers=['CPUExecutionProvider']
+[WARMUP_START] run_id=attn_block_fused_cpu_r0 mode=measure engine=cpu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=attn_block_fused_cpu_r0
+[WINDOW_OPEN] run_id=attn_block_fused_cpu_r0 t_start=1781185403.767266 mode=measure engine=cpu operator=attn_block_fused
+[WINDOW_CLOSE] run_id=attn_block_fused_cpu_r0 t_end=1781185413.766137 iterations=24801 wall_time_s=10.000387
+Profile Elapse Time in ms: 13928
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\attn_block_fused_cpu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\attn_block_fused_cpu\timechart.csv
+
+[MEASURE] attn_block_fused_igpu engine=igpu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=attn_block_fused opset=20 (read from attn_block_fused.onnx)
+[PROFILE_SESSION] providers=['DmlExecutionProvider', 'CPUExecutionProvider']
+[DML_IO] OrtValue device string 'dml' OK (device_id=0)
+[EP_CHECK] run_id=attn_block_fused_igpu_r0 EP_OK: intended=DmlExecutionProvider
+[MEASURE_SESSION] run_id=attn_block_fused_igpu_r0 providers=['DmlExecutionProvider', 'CPUExecutionProvider']
+[DML_IO] run_id=attn_block_fused_igpu_r0 inference path=iobinding+dml
+[WARMUP_START] run_id=attn_block_fused_igpu_r0 mode=measure engine=igpu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=attn_block_fused_igpu_r0
+[WINDOW_OPEN] run_id=attn_block_fused_igpu_r0 t_start=1781185424.888385 mode=measure engine=igpu operator=attn_block_fused
+[WINDOW_CLOSE] run_id=attn_block_fused_igpu_r0 t_end=1781185434.885012 iterations=28871 wall_time_s=10.000182
+Profile Elapse Time in ms: 14054
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\attn_block_fused_igpu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\attn_block_fused_igpu\timechart.csv
+
+[MEASURE] attn_block_fused_npu engine=npu...
+Profiling started...
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=attn_block_fused opset=20 (read from attn_block_fused.onnx)
+Profile Elapse Time in ms: 2140
+[QUARK-INFO]: Checking custom ops library ...
+
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+
+[QUARK-WARNING]: Custom ops library compilation failed: [WinError 5] Access is denied: 'C:\\ProgramData\\miniconda3\\envs\\ryzen-ai-1.6.0\\Lib\\site-packages\\quark\\onnx\\operators\\custom_ops\\lib'.
+
+[QUARK-INFO]: Checked custom ops library.
+Profile Elapse Time in ms: 2448
+[QUARK-WARNING]: The custom ops library C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\quark\onnx\operators\custom_ops\lib\custom_ops.dll does NOT exist.
+[QUARK_INFO]: Time information:
+2026-06-11 16:44:03.703275
+[QUARK_INFO]: OS and CPU information:
+                                        system --- Windows
+                                          node --- ryzenai
+                                       release --- 11
+                                       version --- 10.0.26200
+                                       machine --- AMD64
+                                     processor --- AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD
+[QUARK_INFO]: Tools version information:
+                                        python --- 3.12.11
+                                          onnx --- 1.18.0
+                                   onnxruntime --- 1.23.0.dev20250928
+                                    quark.onnx --- 0.10+db671e3+db671e3
+[QUARK_INFO]: Quantized Configuration information:
+                                   model_input --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\attn_block_fused.onnx
+                                  model_output --- C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\attn_block_fused_xint8.onnx
+                       calibration_data_reader --- <npu.path.quantize_op_to_xint8.<locals>.CalibReader object at 0x0000026C5BC922A0>
+                         calibration_data_path --- None
+                                  quant_format --- QDQ
+                                   input_nodes --- []
+                                  output_nodes --- []
+                          op_types_to_quantize --- []
+                    extra_op_types_to_quantize --- []
+                                   per_channel --- False
+                                  reduce_range --- False
+                               activation_type --- QUInt8
+                                   weight_type --- QInt8
+                             nodes_to_quantize --- []
+                              nodes_to_exclude --- []
+                          subgraphs_to_exclude --- []
+                                optimize_model --- True
+                      use_external_data_format --- False
+                              calibrate_method --- PowerOfTwoMethod.MinMSE
+                           execution_providers --- ['CPUExecutionProvider']
+                                enable_npu_cnn --- True
+                        enable_npu_transformer --- False
+                     specific_tensor_precision --- False
+                                    debug_mode --- False
+                          convert_fp16_to_fp32 --- False
+                          convert_nchw_to_nhwc --- False
+                                   include_cle --- True
+                                    include_sq --- False
+                              include_rotation --- False
+                               include_fast_ft --- False
+                                 extra_options --- {'ActivationSymmetric': True}
+
+[QUARK-INFO]: The input ONNX model can create InferenceSession successfully
+
+[QUARK-INFO]: Obtained calibration data with 16 iters
+Profile Elapse Time in ms: 2653
+[QUARK-INFO]: Removed initializers from input
+Profile Elapse Time in ms: 2756
+[QUARK-INFO]: Simplified model sucessfully
+
+[QUARK-INFO]: Loading model...
+Profile Elapse Time in ms: 2858
+[QUARK-INFO]: The input ONNX model can run inference successfully
+
+[QUARK-INFO]: Start CrossLayerEqualization...
+
+[QUARK-INFO]: CrossLayerEqualization pattern num: 0
+Profile Elapse Time in ms: 2960
+[QUARK-INFO]: Total CrossLayerEqualization steps: 1
+
+[QUARK-INFO]: CrossLayerEqualization Done.
+
+[QUARK-INFO]: optimize the model for better hardware compatibility.
+Profile Elapse Time in ms: 3165
+[QUARK-INFO]: Start calibration...
+
+[QUARK-INFO]: Start collecting data, runtime depends on your model size and the number of calibration dataset.
+
+[QUARK-INFO]: Finding optimal threshold for each tensor using PowerOfTwoMethod.MinMSE algorithm ...
+
+[QUARK-INFO]: Use all calibration data to calculate min mse
+Computing range:   0%|                                                                      | 0/17 [00:00<?, ?tensor/s]PComputing range:  29%|██████████████████▏                                           | 5/17 [00:00<00:00, 49.13tensor/s]PComputing range:  65%|███████████████████████████████████████▍                     | 11/17 [00:00<00:00, 51.65tensor/s]PComputing range: 100%|█████████████████████████████████████████████████████████████| 17/17 [00:00<00:00, 50.56tensor/s]
+
+[QUARK-INFO]: Finished the calibration of PowerOfTwoMethod.MinMSE which costs 0.4s
+Profile Elapse Time in ms: 3675
+[QUARK-INFO]: Remove QuantizeLinear & DequantizeLinear on certain operations(such as conv-relu).
+
+[QUARK-INFO]: Adjust the quantize info to meet the compiler constraints
+
+[QUARK-INFO]: The operation types and their corresponding quantities of the input float model is shown in the table below.
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Op Type              ┃ Float Model                                                                                 ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Gemm                 │ 4                                                                                           │
+│ Constant             │ 5                                                                                           │
+│ Reshape              │ 4                                                                                           │
+│ Transpose            │ 4                                                                                           │
+│ MatMul               │ 2                                                                                           │
+│ Mul                  │ 1                                                                                           │
+│ Softmax              │ 1                                                                                           │
+├──────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Quantized model path │ C:\Users\FPGA\Documents\pytorch-attention\benchmark\onnx_graphs\attn_block_fused_xint8.onnx │
+└──────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────┘
+
+[QUARK-INFO]: The quantized information for all operation types is shown in the table below.
+
+[QUARK-INFO]: The discrepancy between the operation types in the quantized model and the float model is due to the application of graph optimization.
+┏━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
+┃ Op Type   ┃ Activation ┃ Weights  ┃ Bias    ┃
+┡━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
+│ Gemm      │ UINT8(4)   │ INT8(4)  │ INT8(4) │
+│ Reshape   │ UINT8(4)   │          │         │
+│ Transpose │ UINT8(4)   │          │         │
+│ MatMul    │ UINT8(2)   │ UINT8(2) │         │
+│ Mul       │ UINT8(1)   │          │         │
+│ Softmax   │ UINT8(1)   │          │         │
+└───────────┴────────────┴──────────┴─────────┘
+[quark] attn_block_fused_xint8.onnx  (XINT8, synthetic calib n=16)
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20260611 16:44:05.224852  8980 register_ssmlp.cpp:124] Registering Custom Operator: com.amd:SSMLP
+I20260611 16:44:05.224852  8980 register_matmulnbits.cpp:110] Registering Custom Operator: com.amd:MatMulNBits
+I20260611 16:44:05.234896  8980 vitisai_compile_model.cpp:1266] Vitis AI EP Load ONNX Model Success
+I20260611 16:44:05.234896  8980 vitisai_compile_model.cpp:1267] Graph Input Node Name/Shape (1)
+I20260611 16:44:05.234896  8980 vitisai_compile_model.cpp:1271]          input : [49x768]
+I20260611 16:44:05.234896  8980 vitisai_compile_model.cpp:1277] Graph Output Node Name/Shape (1)
+I20260611 16:44:05.234896  8980 vitisai_compile_model.cpp:1281]          output : [49x768]
+Using TXN FORMAT 0.1in ms: 4797
+[Vitis AI EP] No. of Operators :   CPU     4    NPU    44 VITIS_EP_CPU    13
+[Vitis AI EP] No. of Subgraphs :   NPU     3 Actually running on NPU      3
+2026-06-11 16:44:06.2901686 [W:onnxruntime:, session_state.cc:1307 onnxruntime::VerifyEachNodeIsAssignedToAnEp] Some nodes were not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g. ORT explicitly assigns shape related ops to CPU to improve perf.
+2026-06-11 16:44:06.2948626 [W:onnxruntime:, session_state.cc:1309 onnxruntime::VerifyEachNodeIsAssignedToAnEp] Rerunning with verbose output on a non-minimal build will show node assignments.
+[vai] partition summary not found in compile log
+[vai] providers: ['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[EP_CHECK] run_id=attn_block_fused_npu_r0 VAI_PARTITION: not captured in compile log
+[MEASURE_SESSION] run_id=attn_block_fused_npu_r0 int8=attn_block_fused_xint8.onnx providers=['VitisAIExecutionProvider', 'CPUExecutionProvider']
+[WARMUP_START] run_id=attn_block_fused_npu_r0 mode=measure engine=npu warmup_s=3.0 threads=12 graph_opt=ORT_ENABLE_ALL
+F20260611 16:44:06.352680  8980 schedule.cpp:352] Check failed: from_batch_size == to_batch_size (768 vs. 3136)
+2026-06-11 16:44:06.3639615 [E:onnxruntime:, sequential_executor.cc:572 onnxruntime::ExecuteKernel] Non-zero status code returned while running vitis_ai_ep_3 node. Name:'VitisAIExecutionProvider_vitis_ai_ep_3_2' Status Message: xir_deserialize_cif
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+(unknown)
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+(unknown)
+PyCFunction_GetFlags
+_PyObject_MakeTpCall
+PyObject_Vectorcall
+_PyEval_EvalFrameDefault
+PyEval_EvalCode
+PyRun_FileExFlags
+PyRun_FileExFlags
+PyRun_StringFlags
+_PyRun_SimpleFileObject
+_Py_gitidentifier
+
+Traceback (most recent call last):
+  File "C:\Users\FPGA\Documents\pytorch-attention\benchmark\harness.py", line 858, in <module>
+    main()
+  File "C:\Users\FPGA\Documents\pytorch-attention\benchmark\harness.py", line 854, in main
+    run_harness(args)
+  File "C:\Users\FPGA\Documents\pytorch-attention\benchmark\harness.py", line 763, in run_harness
+    _run_repeat(
+  File "C:\Users\FPGA\Documents\pytorch-attention\benchmark\harness.py", line 559, in _run_repeat
+    _duration_loop(execute, warmup_s)
+  File "C:\Users\FPGA\Documents\pytorch-attention\benchmark\harness.py", line 498, in _duration_loop
+    execute_fn()
+  File "C:\Users\FPGA\Documents\pytorch-attention\benchmark\harness.py", line 545, in execute
+    _run_inference_iteration(
+  File "C:\Users\FPGA\Documents\pytorch-attention\benchmark\harness.py", line 464, in _run_inference_iteration
+    sess.run(output_names, feeds)  # VAI EP: synchronous, blocks until NPU finishes
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\Lib\site-packages\onnxruntime\capi\onnxruntime_inference_collection.py", line 275, in run
+    return self._sess.run(output_names, input_feed, run_options)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+onnxruntime.capi.onnxruntime_pybind11_state.RuntimeException: [ONNXRuntimeError] : 6 : RUNTIME_EXCEPTION : Non-zero status code returned while running vitis_ai_ep_3 node. Name:'VitisAIExecutionProvider_vitis_ai_ep_3_2' Status Message: xir_deserialize_cif
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+public: class vaip_core::TryFuseProto * __ptr64 __cdecl vaip_core::DpuSubgraphEntryProto::mutable_try_fuse(void) __ptr64
+(unknown)
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+PyInit_onnxruntime_pybind11_state
+(unknown)
+PyCFunction_GetFlags
+_PyObject_MakeTpCall
+PyObject_Vectorcall
+_PyEval_EvalFrameDefault
+PyEval_EvalCode
+PyRun_FileExFlags
+PyRun_FileExFlags
+PyRun_StringFlags
+_PyRun_SimpleFileObject
+_Py_gitidentifier
+
+Profile Elapse Time in ms: 5612
+Profile finished
+Generated data files path: C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\attn_block_fused_npu
+Live Profile Output file : C:\Users\FPGA\Documents\pytorch-attention\benchmark\results\uprof\20260611_162237\attn_block_fused_npu\timechart.csv
+
+failed. was unexpected at this time.
+
+C:\Users\FPGA\Documents\pytorch-attention\benchmark>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

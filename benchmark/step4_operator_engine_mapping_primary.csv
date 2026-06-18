@@ -1,4 +1,4 @@
-# PROVENANCE: energies from primary tower CSVs (analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) at full precision.
+# PROVENANCE: energies from primary tower CSVs (analysis_out.csv + analysis_out_20260615_145614_cpu_int8.csv) at full precision. Full-precision publication table; energy-layer diff 83/83 numeric PASS + 1 expected-N/A, 2026-06-17. VALIDATED status: see PROJECT_CONTEXT.md §8.
 operator,shape_class,mechanism,deployment_precision,ranking_metric,candidate_engines,excluded_engines_reason,winner,margin_pct,is_tie,architecture_ratio,precision,gap,gap_dist,arch_dist,sign_marginal,naive_winner,sign_divergence,diverges_deployment,trust_flag
 attn_block_fused[s1],avg,COMPUTE_BOUND_DENSE,INT8 (matched QDQ),matched_INT8_energy,cpu=0.12875,igpu: not evaluable at INT8; npu: N/A (VitisAI fused crash),no matched recommendation (npu N/A),,False,,0.42669924524487446,,,,,igpu,N/A,N/A,N/A npu
 attn_score_matmul[s1],avg,COMPUTE_BOUND_DENSE,INT8 (matched QDQ),matched_INT8_energy,cpu=0.00429113; npu=0.0055416,igpu: not evaluable at INT8,cpu,29.1407,False,0.7743,0.734453964746013,0.5687238910628872,0.4313,0.2257,False,cpu,False,False,
