@@ -1,11 +1,9 @@
 # PROJECT_CONTEXT.md
 
-> **Purpose of this file.** This is a portable, tool-agnostic context document for an
-> 8-week research internship. Paste it into any AI agent (Cursor, Claude Code, Gemini,
-> Hermes, etc.) at the start of a session so the agent has full project context without
-> re-explanation. Keep it updated as the single source of truth. When in doubt, this
-> file wins over an agent's own memory.
-
+> **Purpose of this file.** Portable, tool-agnostic context for an 8-week research internship
+> (started **June 1, 2026**). Paste into any AI agent at session start. **Live source of truth**
+> for current facts and tasks. Dated session log and Phase 1 detail: **`PROJECT_ARCHIVE.md`**
+> (for Hermes / historical lookup). When in doubt, this file wins over an agent's own memory.
 ---
 
 ## 1. ROLE & PURPOSE (instructions for the AI reading this)
@@ -23,10 +21,9 @@ they are the most common place where well-meaning suggestions go wrong.
 
 ## 2. PROJECT GOAL
 
-Run AI-operator and model benchmarks on an **AMD Ryzen AI 9 HX 370** (which has a CPU, an
-integrated GPU, and an NPU) and perform a **design space exploration (DSE) in terms of energy
-efficiency** across all three compute engines.
-
+Run AI-operator and model benchmarks on an **AMD Ryzen AI 9 HX 370** (CPU, iGPU, NPU) and —
+in **Phase 2** — a discrete **AMD Radeon AI PRO R9700**, performing a **design space exploration
+(DSE) in terms of energy efficiency** across compute engines.
 - Energy is measured as **E = P · t** (power × execution time).
 - The deliverable is a **short, publishable paper**.
 - The core comparison must be **fair**: hold the runtime constant (ONNX Runtime) so that
@@ -39,12 +36,13 @@ a single narrow finding like "the NPU likes matmuls."
 
 ---
 
-## 3. HARDWARE FACTS (important — do not conflate the two machines)
+## 3. HARDWARE FACTS (important — do not conflate the three machines)
 
 | Machine | Role | Details |
 |---|---|---|
-| **HX 370 tower** (lab-provided) | **All measurements** | AMD Ryzen AI 9 HX 370: Zen 5 CPU + Radeon 890M iGPU + XDNA NPU. Windows-based. This is where every benchmark runs. |
+| **HX 370 tower** (lab-provided) | **HX 370 measurements** | AMD Ryzen AI 9 HX 370: Zen 5 CPU + Radeon 890M iGPU + XDNA NPU. Windows-based. Phase 1 operator sweep complete (§7). |
 | **Personal laptop** (2024 ROG Strix G16) | **Development only** | Windows 11, NVIDIA RTX 4070. The CUDA/NVIDIA GPU is **irrelevant to this project** — it serves a separate CUDA-learning effort. Never used for measurement. |
+| **R9700 tower** (lab-provided, Phase 2) | **R9700 measurements only** | AMD Radeon AI PRO R9700: RDNA4 (Navi 48, **gfx1201**), 32 GB GDDR6, 256-bit, ~300 W TBP — discrete card on its **own power rail**. **Ubuntu 24.04**, ROCm + PyTorch (AMD Radeon guide). Separate machine from the HX 370 tower; host CPU/RAM TBC on arrival. |
 
 The AMD Ryzen AI Software SDK is **Windows-based**.
 
@@ -99,6 +97,34 @@ values — known/expected; do not use dispatch-subtracted headline for NPU cross
 Per-engine comparison relies on **controlled execution** (one ORT execution provider per run) and
 **baseline subtraction**, not separate hardware power rails. State this explicitly in the paper
 methodology.
+
+### R9700 Measurement Scope Notes (Phase 2)
+
+- **Engine `r9700`, FP32, ONNX Runtime ROCm EP** (not MIGraphX — ROCm EP dispatches op-by-op,
+  preserving operator isolation and keeping the `fused_block` tier unfused/comparable to CPU+iGPU).
+- **Power path:** discrete card is invisible to uProf. Standalone `gpu_power.py` amd-smi sampler
+  brackets each harness invocation (own process → its host cost stays off the measured rail).
+  Window energy = SMU energy-accumulator **counter delta** (Branch A) when the counter is populated,
+  else **trapezoidal integration** of board power (Branch B); chosen per-window in `parse_energy.py`
+  and recorded in `window_energy_method`.
+- **Cross-instrument + cross-EP asymmetry (paper limitation):** 3 APU engines on uProf package
+  counters (Windows, DirectML/Vitis) vs R9700 on its own board telemetry (TBP-class: VRAM+VRM+fans,
+  driver-estimated) on ROCm/Linux. Within-engine and idle-subtracted deltas are clean; absolute
+  cross-instrument comparisons carry the caveat. R9700-vs-iGPU is cross-EP (ROCm vs DirectML) and
+  cross-OS — frame R9700 as its own engine on the best-available stack, naming the bandwidth-vs-runtime
+  confound.
+- **Central hypothesis:** does dedicated high-bandwidth GDDR6 give memory-bound operators a GPU winner
+  the shared-LPDDR5x 890M never got? Requires ROCm **device-resident IOBinding** — host-feed fallback
+  measures PCIe, not VRAM, and invalidates memory-bound rows (tripwire: `[ROCM_IO] HOST-FEED-FALLBACK`).
+- **Net metric (analog of §3 headline):** `energy_per_op_J = (window_energy_J − idle_energy_J)/iterations`,
+  idle = duration-matched GPU idle window (discrete rail is a cleaner floor than the APU package).
+  Same 21-op frame, avg corner, N=197, D=768. **Dispatch baseline runs ON the GPU** (ROCm EP), so unlike
+  the NPU CPU-fallback dispatch, dispatch-subtraction is valid for r9700.
+- **Gates before any R9700 number counts:** ROCm EP present; device_id alignment via
+  `ROCR_VISIBLE_DEVICES`; energy = accumulator × counter_resolution; IOBinding device-string live;
+  gfx_busy placement gate. Full sequence: `benchmark/RADEON_R9700_RUNBOOK.md`.
+- **Code:** branch `RadeonR9700` off `main`; additive `r9700` engine; new `benchmark/gpu_power.py`,
+  `benchmark/tests/test_parse_energy_amdsmi.py`. uProf path numerically untouched.
 
 ---
 
@@ -345,11 +371,11 @@ Raw idle differed **+51%** (216 J vs 327 J) between sessions. Resolved: **static
 **Identity = 1.000 is a consistency check only** (`cpu_INT8` cancels algebraically) — not validity
 evidence. Future sweeps: capture idle in the **same** session as measures.
 
-### Step 4 scoping (not yet executed)
+### Step 4 (operator→engine mapping)
 
-Operator→engine mapping is **not** done. When executed: rank GEMM/conv NPU candidates on
-`architecture_ratio` / matched-INT8 energy; rank FP32-deployment ops on FP32 grid; do not map on
-`original_gap` where `precision_ratio` ≪ 1 or ≫ 1.
+**Complete (2026-06-17, validated).** Mechanistic routing on avg corner. Artifacts:
+`benchmark/STEP4_OPERATOR_ENGINE_MAPPING.md`, `benchmark/step4_operator_engine_mapping.py`.
+Full method and sign-divergence findings summarized in prior context — see archive if needed.
 
 ---
 
@@ -360,8 +386,9 @@ Operator→engine mapping is **not** done. When executed: rank GEMM/conv NPU can
 | Getting familiar with NPU programming | 2 weeks | Done (GEMM plumbing + NPU branch). |
 | Preparing the testbench for power evaluation on LLM functions | 1 week | Done (harness, operators, run_plan, three-engine EPs). |
 | Measurements | 1 week | **Done (2026-06-12)** — three-engine production sweep captured. |
-| Refinement and validation | 1 week | **Mostly done (2026-06-15).** Post-process, trust validation, cpu_INT8 decomposition complete. **Step 4 mapping remains.** |
-| Preparation of the report | 2 weeks | **← current phase.** Step 4 → Chris sign-off → paper scaffold. |
+| Refinement and validation | 1 week | **Done (2026-06-17)** — trust validation, cpu_INT8 decomposition, Step 4 mapping. |
+| Preparation of the report | 2 weeks | In progress (HX 370 numbers validated). |
+| **Phase 2 — R9700 fourth engine** | ~1 week | **← current phase (from 2026-06-22).** Tower execution + sweep. Runbook: `benchmark/RADEON_R9700_RUNBOOK.md`. |
 
 **Operator ordering tip:** GEMM first as a *pipeline plumbing test* (simplest op, proves the loop),
 then move immediately to **scaled-dot-product attention** as the first *real* operator — that's what
@@ -416,257 +443,51 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
   `pytorch-attention` repo; used to draft export scripts.
 - **Claude Code** — installed on the APU PC proactively, kept idle until a stronger multi-file agentic
   loop is needed. When used, runs in Cursor's integrated terminal (a clean, common combo).
-- **Hermes Agent** — **deferred.** Revisit once real benchmarking/measurement is underway and a richer
-  cross-session context tracker is genuinely needed (and once it's less brand-new on Windows). Note:
-  Hermes memory is a local FTS5-indexed SQLite log of sessions *run through it* — it does **not**
-  retroactively ingest past work, so installing later loses nothing that wasn't routed through it.
-  This file is the real fix for "re-explaining context," and seeds Hermes well whenever it's added.
+- **Hermes Agent** — **deferred.** Revisit for cross-session tracking. Route sessions through
+  Hermes when added; seed with `PROJECT_CONTEXT.md` + `PROJECT_ARCHIVE.md`. Hermes does not
+  retroactively ingest past work not run through it.
 
 ---
 
-## 12. CURRENT STATUS / CHANGELOG
+## 12. CURRENT STATUS & TASKS
 
-- **2026-06-02 (Day 1):** uProf responsive via CLI. ONNX Runtime confirmed exposing CPU + DirectML +
-  Vitis AI EPs in one `ryzen-ai-1.6.0` conda env (single-environment rule satisfied). Tooling decided: Cursor now,
-  Claude Code idle-installed, Hermes deferred. This context file created.
-  - GEMM plumbing test PASSED on CPU EP. Full pipeline validated end-to-end
-    (PyTorch 2.7.1+cpu -> ONNX opset 17 -> ORT 1.23.0.dev -> inference -> timing).
-    Numerical check MATCH (max abs diff 1.43e-6). All three EPs visible in the
-    `ryzen-ai-1.6.0` env (Vitis AI, DirectML, CPU). Model-selection scope confirmed:
-    3-4 from EACH list, 6-8 total.
-  - Full model survey completed (all 15 attention modules + 18 ViTs read and
-    analyzed). Proposed shortlist drafted — **pending three decisions for Chris**
-    (see §4). Key correction vs initial draft: ViT vs PoolFormer is NOT a clean
-    control (topology differs); PvT-Tiny vs PoolFormer-12 is the correct pair.
-    Quantization policy gap identified as the most important unresolved methodological
-    decision.
-- **2026-06-03 (Day 2):** Architecture and NPU foundations research day — reading only, no code.
-  - **Transformer attention architecture:** Traced the full operator chain: QKV projections (three
-    linear/GEMM ops) → scaled dot-product attention (QKᵀ matmul → scale → softmax → AV matmul) →
-    output projection. Understood why attention is O(N²·d) and how that maps to two distinct matmul
-    shapes: [N×d]·[d×N] for the QKᵀ product, then [N×N]·[N×d] for the AV product.
-  - **NPU dataflow architectures:** Studied how spatial dataflow arrays (systolic arrays and their
-    variants) work: data tiles flow through a 2D PE mesh; the array's efficiency depends on the matmul
-    being *stationary enough* for the tiled operands to fill the PEs. Understood that CPU SIMD, iGPU
-    SIMT warps, and NPU systolic arrays all see the *same operation* but have fundamentally different
-    utilization curves as a function of matrix shape and sequence length.
-  - **Why static shapes and INT8 are vital for Vitis NPU (EOD question answered):**
-    The Vitis AI compiler AOT-compiles an ONNX graph into a fixed instruction schedule for the XDNA
-    array. Dynamic shapes would require runtime recompilation — the compiler does not support that.
-    INT8 is required because the XDNA MAC array is an 8-bit integer array; FP32/FP16 ops fall back
-    to the CPU and lose the NPU's energy advantage entirely. Together: a model must have fixed input
-    dimensions AND be quantized to INT8 *before* the compiler sees it, or it will not run on the NPU.
+**Phase:** Phase 2 — R9700 fourth engine (`RadeonR9700` branch off `main`).
+**Phase 1:** HX 370 operator sweep **complete** — measured findings in §7; Step 4 mapping done (2026-06-17).
+**Last update:** 2026-06-22 — R9700 harness, `gpu_power.py`, amd-smi parse/join coded (staged on tower branch).
 
-- **2026-06-04/5 (Day 3/4):** Architecture deep-dive — all five shortlisted models read; operator roles
-  and NPU implications documented. Reference: `operator_architecture_selection.md` (Opus-generated
-  baseline) for the cluster framework; this entry adds the per-model and NPU-specific detail.
+**Dated session log (2026-06-02 → present):** `PROJECT_ARCHIVE.md` — use for Hermes and historical lookup.
 
-  **Cluster A — structural operators (shared across all five models, same NPU behavior everywhere)**
+### Tomorrow (2026-06-23) — R9700 tower execution (`RadeonR9700` branch)
 
-  | Operator | Where in workflow | How computed | NPU behavior |
-  |---|---|---|---|
-  | Patch-embedding Conv2D | Stem: image → token sequence | Strided conv, e.g. 16×16 kernel, produces [N×C] tokens | Mapped to NPU conv engine if INT8; static spatial dims required |
-  | Downsampling Conv2D | Between pyramid stages (PvT, EfficientFormer only) | Strided conv halves H,W | Same as above |
-  | Linear/GEMM (FFN) | After every token-mixer block | Two matmuls: [N×C]·[C×4C] then [N×4C]·[4C×C] | NPU's primary target — square-ish shapes fill systolic array well |
-  | GELU | Inside FFN | Element-wise approximation (tanh or erf formula) | Likely falls back to CPU; no MAC array benefit |
-  | LayerNorm / GroupNorm / BatchNorm | After each sub-block | Running mean+variance over C (or group) dimension | Reduction op; partial CPU fallback expected |
-  | Residual add | Skip connections throughout | Element-wise add | Trivially CPU/DMA; not a bottleneck |
+Pre: commit the staged branch (manual). Clean standalone terminal + Cursor CLOSED for any
+power capture. Source ROCm env. Full detail: `benchmark/RADEON_R9700_RUNBOOK.md`.
 
-  **Cluster B1 — token-mixer (attention-matrix) operators — the key NPU study axis**
+- [ ] **0. Gate zero:** `get_available_providers()` lists `ROCMExecutionProvider`? If absent, decide
+      MIGraphX-for-isolated vs install ROCm-EP build before proceeding.
+- [ ] **1. Versions:** record ROCm version + `ort.__version__` into `results/metadata.json`.
+- [ ] **2. Host/device identity:** `rocminfo` + `amd-smi list` → R9700 BDF; set `ROCR_VISIBLE_DEVICES`
+      so it is device 0 for ORT EP + OrtValue + amdsmi handle; re-confirm providers under mask.
+- [ ] **3. amdsmi energy verification** → FIX `gpu_power.read_sample`: `energy_uj = accumulator ×
+      counter_resolution` (not accumulator alone); confirm `power_w` key/unit. Counter populated?
+      => Branch A (counter-delta); else Branch B (integration). This is the A/B verdict.
+- [ ] **4. Sampler smoke (5 s, idle):** `power_w` populated, `gfx_busy` moves, `energy_uj` yes/no.
+- [ ] **5. Build FP32 graphs:** `python operators.py` → `onnx_graphs/` populated.
+- [ ] **6. Parse-layer regression:** `pytest benchmark/tests/test_parse_energy_amdsmi.py` (must pass).
+- [ ] **7. Single-op live smoke (real GPU, `ffn_gemm`):** REQUIRE `[ROCM_IO] OrtValue device 'X' OK`
+      (NOT HOST-FEED-FALLBACK) + `EP_OK=ROCMExecutionProvider`; enrich that one trace and confirm
+      `gfx_busy` high, no placement WARN. HOST-FEED-FALLBACK => fix `probe_rocm_ortvalue` before
+      trusting any memory-bound row (central-hypothesis tripwire).
 
-  Each model's attention differs in *what matrix is built*, *its shape*, and *how many tokens feed it*:
+**Gate to clear before Wed:** power path validated end-to-end on one operator.
 
-  - **ViT** (isotropic, 197 tokens = 196 patches + CLS):
-    - Q/K/V projections: three [197×C]·[C×C] GEMMs per layer. For ViT-B/16: C=768, head_dim=64, 12 heads.
-    - QKᵀ score matmul: [197×64]·[64×197] → **[197×197]** attention matrix per head. Aspect ratio ≈ 1:1 but N=197 is modest — systolic array fills reasonably.
-    - Softmax over 197-wide rows — element-wise reduction.
-    - AV weighted-sum: [197×197]·[197×64] → [197×64]. Consumes the N×N matrix. Tall operand.
-    - *NPU note:* Both matmuls are square-ish. 197 is small enough that PE utilization is not guaranteed — the array may be underused unless the batch tiles well.
+### HX 370 / paper (backlog)
 
-  - **XCiT** (isotropic; cross-covariance attention):
-    - Instead of QKᵀ over tokens, computes KᵀQ over channels → attention map is **[C×C]**, not [N×N].
-    - Score matmul shape: [64×197]·[197×64] → **[64×64]** per head (XCiT-nano: head_dim=64). Tiny square.
-    - AV equivalent: [64×64]·[64×197] → [64×197]. Transpose back to token space.
-    - Complexity flips from O(N²·C) to O(C²·N): cheaper at large N, but the [64×64] matrix may underutilize a large systolic array — too small to tile across all PEs.
-    - Also has a **depthwise Conv2D LPI block** (Cluster B2 below) for local spatial mixing.
+- [ ] Paper drafting from validated §7 numbers (scaffold; divergence section draftable first)
+- [ ] F2 figure from validated mapping (`figures/F2_decomposition.png`) if not yet rendered
+- [ ] Chris sign-off on model-level precision policy (§4)
+- [ ] PoolFormer vs PvT control pair (architecture selection; §4)
+- [ ] Track-2 real-mixer shape fixes (§4); full ViT shortlist scope (§4)
+- [ ] `attn_block_fused×npu` remediation (VitisAI crash — fusion gap on NPU unmeasurable)
+- [ ] Optional: re-measure `avg_pool_token_mixer×cpu_int8` (LOW-TRUST, CV 20.7%)
+- [ ] small/large SDPA corners (deferred DSE expansion)
 
-  - **PvT** (hierarchical; Spatial-Reduction Attention):
-    - Before forming QKᵀ, a **strided Conv2D** shrinks K and V spatially (e.g. 8× reduction at stage 1).
-    - Attention matrix is then [N_q × N_kv_reduced] — significantly smaller than full N×N.
-    - QKᵀ shape example (stage 1, 56×56 input, 8× SR): [3136 × 64]·[64 × 49] → [3136×49]. Very rectangular — tall-and-thin; systolic array rows load well but columns are sparse.
-    - *NPU note:* The SR conv is itself an NPU-eligible INT8 conv. The attention matrix is non-square, which may affect utilization differently than ViT's.
-
-  - **PoolFormer** (hierarchical; no attention matrix at all):
-    - Token mixer is **average pooling** over a local window — no QKV, no matrix product.
-    - Only Cluster A ops (Conv2D stem, FFN GEMM, GroupNorm, residual add) remain.
-    - *NPU note:* Pooling is a reduction, not a MAC-array workload. Expected to run mostly on CPU/iGPU. This model is the **control**: any energy delta vs PvT is attributable to the token mixer alone.
-
-  - **EfficientFormer** (hierarchical; conv/pooling stages + late MHSA):
-    - Stages 1–3: Conv2D blocks + average pooling token mixers on 4D feature maps (no attention).
-    - Stage 4 only: full MHSA, but on a **49-token sequence** (7×7 spatial grid, flattened).
-    - MHSA shapes at stage 4: QKᵀ is [49×32]·[32×49] → [49×49] per head. Very small — 49×49 matrix.
-    - *NPU note:* The [49×49] attention matrix is tiny. Systolic array will be severely underutilized unless the NPU tiles across batch or heads. This tests NPU behavior at minimal sequence length.
-
-  **Cluster B2 — token-mixer (non-attention) operators**
-
-  | Operator | Where | Models | How computed | NPU behavior |
-  |---|---|---|---|---|
-  | Average pooling (token mixer) | Every block | PoolFormer, EfficientFormer stages 1–3 | Local window mean over H×W | Reduction; likely CPU or iGPU; no matmul benefit |
-  | Depthwise Conv2D (LPI) | After cross-covariance block | XCiT | Per-channel 3×3 conv (no cross-channel mixing) | NPU conv engine can handle if INT8 and static shape |
-
-  **Key NPU contrasts across models (the measurement hypothesis):**
-  - Cluster A ops cost the same on all engines regardless of model — any energy gap between models is B1/B2.
-  - ViT and XCiT are the cleanest NPU matmul-shape experiment: same isotropic topology, same FLOP order of magnitude, but [197×197] vs [64×64] attention matrices → tests whether matrix *shape* affects NPU utilization.
-  - PvT's SR conv before attention and PoolFormer's pooling-only mixer test whether NPU conv engines outperform attention for mixing.
-  - EfficientFormer's 49-token MHSA is the edge case: can the NPU profitably accelerate a 49×49 matmul, or does dispatch overhead dominate?
-
-  **Files created (Day 3/4 — Cursor-generated benchmark harness):**
-
-  | File | Purpose |
-  |---|---|
-  | `benchmark/operators.py` | Operator registry + SDPA block configs + isolated/fused ONNX export (`attn_block_fused`) |
-  | `benchmark/analysis.py` | Fusion-gap analysis on `runs.csv` → `analysis_out.csv`; `--demo` synthetic fixture |
-  | `directives/attention_block_dimensions.md` | Per-architecture N/D extraction + SDPA corner rationale |
-  | `benchmark/harness.py` | Single shared measurement loop — argparse, ORT session setup, WINDOW_OPEN/CLOSE markers, CSV append, EP placement verification |
-  | `benchmark/run_plan.py` | Parses pipe-delimited sweep plan; drives per-operator uProf+harness loop (replaces broken CMD `for /f`) |
-  | `benchmark/run_session.bat` | Session wrapper: baselines (direct uProf) + `run_plan.py` measure matrix |
-  | `benchmark/run_sweep.bat` | Full sweep entry: `conda activate ryzen-ai-1.6.0` → `run_session.bat` |
-  | `benchmark/BENCHMARK_WORKFLOW.md` | User-facing CMD workflow guide (prerequisites, export, smoke test, baselines, sweep, troubleshooting) |
-  | `benchmark/IMPLEMENTATION_BLUEPRINT.md` | Design spec: registry schema, harness CLI, dispatch baseline rationale, CSV schema, uProf parent-wrap pattern, locked defaults |
-  | `benchmark/onnx_graphs/` | 16 pre-exported `.onnx` operator graphs (+ `dispatch_baseline.onnx`) for Netron inspection and ORT sessions |
-  | `benchmark/parse_energy.py` | Join uProf timechart + `runs.csv` → `runs_enriched.csv` (`window_energy_J`, `idle_energy_J`, `dispatch_energy_J`); `--test-toy` + `--plot` |
-  | `benchmark/results/` | Empty placeholder — `runs.csv` and `uprof/<SESSION_TS>/` populate during measurement |
-  | `directives/measurement_harness_spec.md` | Protocol spec: measurement philosophy, session options, loop structure, baselines, uProf integration, CSV schema, validity checklist |
-  | `directives/operator_architecture_selection.md` | Architecture & operator selection rationale (Opus-generated; authoritative cluster definitions) |
-
-- **2026-06-08 (Day 5 — tower verification COMPLETE):** Full harness + uProf smoke test passed on HX 370 in `ryzen-ai-1.6.0`. Reference artifacts in `benchmark/uprof_smoke/`.
-
-  **Tower verification checklist — all confirmed:**
-  - [x] **Conda env:** `ryzen-ai-1.6.0`
-  - [x] **ORT:** `1.23.0.dev20250928`; providers: `CPUExecutionProvider`, `DmlExecutionProvider`, `VitisAIExecutionProvider`
-  - [x] **uProf:** `5.3.518.0`; child-launch via full interpreter path `C:\ProgramData\miniconda3\envs\ryzen-ai-1.6.0\python.exe` (not PATH alias)
-  - [x] **uProf timestamp format:** wall-clock `HH:MM:SS:ms` (local tz), **not** epoch — conversion required to align with harness epoch markers (see §3)
-  - [x] **Power scope:** `timechart --list` — Power counters only at **[Socket, Core]**; no per-rail iGPU/NPU (see §3 Measurement Scope Notes)
-  - [x] **GPU driver (890M):** `32.0.21030.0`
-  - [x] **DML IOBinding:** `OrtValue.ortvalue_from_numpy(arr, "dml", 0)` OK (`dml_ortvalue_smoke_test.py` PASS)
-  - [x] **GPU sync:** `io_binding.synchronize_outputs()` after each `run_with_iobinding` — iGPU `ffn_gemm` = **0.716 ms/iter**, ~**6,982 iters/5 s** (physically sane; no async over-count)
-  - [x] **EP placement:** `EP_OK` on all four smoke runs
-
-  **Smoke-test reference latencies (`ffn_gemm`, shape `197×768@768×3072`, FP32, opset 20):**
-
-  | Run | Engine | Mean latency |
-  |---|---|---|
-  | `ffn_gemm` | CPU | **1.073 ms**/iter |
-  | `ffn_gemm` | iGPU | **0.716 ms**/iter |
-  | `dispatch_baseline` | iGPU | **0.076 ms**/iter |
-
-  Session constants recorded in `benchmark/results/metadata.json` (includes `csv_schema` with
-  `tier` / `block_id` / `shape_class` allowed values and example rows). Harness code under
-  `benchmark/` (`operators.py`, `harness.py`, `run_sweep.bat`, `parse_energy.py`, `onnx_graphs/`, `results/`).
-
-- **2026-06-08 (Week 2, Day 1 — close-out):** All tower-verification items cleared.
-
-  **Status (confirmed on HX 370):**
-  - `synchronize_outputs()` on iGPU IOBinding — `ffn_gemm` ~**0.72 ms/iter**, ~**13,560 iters/10 s**, no async over-count
-  - DML IOBinding probe passes; **EP_OK** on all smoke runs
-  - uProf launch confirmed: trailing positional target, absolute `python.exe` path (no `--`), `--event power --interval 100`
-
-  **uProf CSV schema (ground truth: `benchmark/uprof_toy/`):**
-  - Preamble → `PROFILE RECORDS` section; data header `RecordId,Timestamp,socket0-package-power,...`
-  - `Timestamp`: `HH:MM:SS:ms` (colon before ms, e.g. `16:36:25:532`)
-  - Power column: **`socket0-package-power`** (W) — integrate this; ignore `core0-power`..`core11-power`
-  - Session date from preamble `Profile Start Time:` (e.g. `Jun-08-2026_16-36-25`); local tz **Europe/Athens**
-
-  **`run_sweep.bat` fixes:** launch line uses `--event power --interval 100` + absolute `python.exe` path (no `--`); `upprof`→`uprof` session-dir typo corrected.
-
-  **Window bounds (design decision):** Option **(b)** — `harness.py` now writes `t_start_epoch` / `t_end_epoch` columns to `runs.csv` (alongside stdout `[WINDOW_OPEN]`/`[WINDOW_CLOSE]` markers). `parse_energy.py` reads these directly; falls back to per-run `.log` parsing if columns are absent (option (a) compatibility).
-
-  **`parse_energy.py`:** Deterministic post-processor — `parse_uprof_csv()`, trapezoidal `integrate_power()`; joins `runs.csv` to uProf CSVs by `run_id`; fills `window_energy_J`, joins `idle_energy_J` (common floor by `repeat_idx`) and `dispatch_energy_J` (per engine); dedups baseline rows. Subtraction stays in `analysis.py`. `--plot` saves per-run PNG with `t_start`/`t_end` vertical markers (requires `matplotlib`).
-
-  **Toy verification (`toy_igpu`, `AMDuProf-python-Timechart_Jun-08-2026_16-36-25/timechart.csv`):**
-  - Window: `t_start=1780925790.173200`, `t_end=1780925800.172677`, `iterations=13560`
-  - `window_energy_J` ≈ **457 J** (mean package power ~46 W × ~10 s); `energy_per_op_J` ≈ **3.37×10⁻² J/op** (dispatch baseline 0 for toy)
-
-  **GUI note:** `timechart` output is **CSV-only** (no `.uprof` DB; confirmed in `timechart --help`). `collect` is a CPU profiler, not the package-power path. CSV→`.uprof` conversion is impossible. GUI viewing of power data not pursued — visual verification via `parse_energy.py --plot` PNGs instead. uProf-GUI practice deferred to a future CPU/GPU-profiling exercise where `collect`/`gputrace` is the correct tool.
-
-- **2026-06-10 (analysis layer — config extraction + fusion-gap pipeline):**
-  - **`directives/attention_block_dimensions.md`:** N/D/head dims pulled from repo model files;
-    proposed small/avg/large corners documented.
-  - **`operators.py`:** `SDPA_BLOCK_CONFIGS` (three corners); isolated-op shapes derived from config
-    (`fusion_member` tagging); `attn_block_fused` Tier-2 graphs (unfused ONNX chain).
-  - **`runs.csv` schema:** `tier`, `block_id`, `shape_class`, `fusion_member` (+ harness CLI
-    `--tier` / `--block-id` / `--shape-class`). Documented in `metadata.json` → `csv_schema`.
-  - **`analysis.py`:** Built and validated on synthetic data (`python analysis.py --demo`):
-    gap arithmetic confirmed **22 → 16 mJ = 6 mJ / 27.27%**; dispatch-baseline dedupe, repeat
-    aggregation (mean ± std), `fusion_member` filtering, incomplete/NaN guard all verified.
-  - **`WINDOW_ENERGY_IS_RAW=True` confirmed** on production session `20260612_143854` (power×time
-    sanity, all Step 1–4 gates PASS). Was open question pre-sweep.
-
-- **2026-06-11 (NPU harness branch — code only, not measured yet):**
-  - **`benchmark/npu/`:** NPU package — `path.py` (Quark XINT8, `make_npu_session()`, partition capture), `gemm_validate.py` (standalone plumbing test). Run: `cd benchmark && python -m npu.gemm_validate`.
-  - **`harness.py`:** Third EP branch `--engine npu` reuses the **same** `_run_repeat` / `_duration_loop` path as CPU/iGPU. NPU supplies only: offline quantize → session (compile) → `sess.run()` (no `synchronize_outputs()`). Partition summary → `notes` + `results/partitions/{run_id}.json`. Q/DQ boundary CPU fallback recorded in notes.
-  - **`operators.py`:** `xint8_onnx_path()`; `python operators.py --quantize-xint8-all` for batch offline prep.
-  - **`run_sweep.bat`:** `ENGINES=cpu igpu npu`; capture idle + dispatch baselines per session. Pass base `--run-id` without `_r0` (harness suffixes repeats).
-  - **Validated plumbing (pre-harness):** `ffn_gemm` XINT8 → VitisAI EP, ops_NPU=11 / VITIS_EP_CPU=2, relative L2 ≈ 0.017 vs FP32 CPU (`benchmark/npu/gemm_validate.py`).
-  - **Cache rule:** delete `benchmark/.vaip_cache/` after NPU driver or VitisAI EP version change.
-  - **Calibration policy:** synthetic n=16 distribution-matched tensors per graph (operator energy, not task accuracy) — documented in `metadata.json` → `npu_path` section.
-
-- **2026-06-11 (fusion_member + registry-driven sweep plan):**
-  - **`harness.py`:** emits `fusion_member` column on measure rows (from profile / entry default).
-  - **`operators.py`:** `profile_indices_for_corner()`, `--sweep-plan --corner avg` prints/writes pipe-delimited plan; `SESSION_MEASURE_OPERATORS` + `SWEEP_SKIP_ENGINES` (attn_block_fused NPU).
-  - **`run_session.bat` / `run_sweep.bat`:** pre-launch plan matrix + pause; per-op `shape_index` from registry (avg corner: SDPA N=197; q/k/v all three; single-profile ops index 0).
-
-- **2026-06-12 (production sweep — measurement complete):**
-  - **Session:** `benchmark/results/runs_20260612_143854.csv` +
-    `benchmark/results/uprof/20260612_143854/`.
-  - **Row counts:** 62 measure rows (cpu **21** / igpu **21** / npu **20**) + **4 baselines**
-    (`idle_cpu` + `dispatch_baseline` × cpu/igpu/npu). **18 operators**, **21 plan rows**
-    (avg/`sdpa_avg` corner only — ViT-B/16 canonical N=197, 12 heads, head_dim 64).
-  - **Infrastructure:** measure loop via `run_plan.py` (see §5); supersedes CMD `for /f` plan parser.
-  - **Known issues (confirmed in production):**
-    - **`attn_block_fused` omitted on NPU** — VitisAI EP crash (`from_batch_size` 768 vs 3136).
-      Tier-2 fusion gap on NPU **not measurable**; cpu/igpu `fused_block` rows captured.
-    - **NPU dispatch baseline runs CPU-fallback (`VITIS_EP_CPU`)** — use idle-subtracted headline only.
-  - **Follow-on (2026-06-15):** post-process, trust validation, engine-selection analysis, and
-    cpu_INT8 control decomposition — all complete. Summary: **§7**.
-
-- **2026-06-05 (idle headline + run-id hygiene):**
-  - **Idle:** `--mode idle` uses the same warmup/window timer as measure/dispatch (sleep loop body, no ORT). `parse_energy.py` joins idle uProf window → `idle_energy_J` on measure rows (by `repeat_idx`).
-  - **Headline:** `energy_per_op_J` = idle-subtracted in `analysis.py`; `energy_per_op_dispatch` retained as secondary (NPU dispatch CPU-fallback caveat).
-  - **Run-id:** harness `resolve_run_id()` appends `_r{repeat_idx}` once; strips trailing `_r\d+` from `--run-id`.
-
-- **2026-06-15 (operator sweep + cpu_INT8 control — COMPLETE):** Production sweep session
-  `20260612_143854` (cpu/igpu FP32, npu XINT8; idle 216.22 J) measured, post-processed, trust-validated.
-  cpu_INT8 methodological control `20260615_145614_cpu_int8` (idle 326.49 J) measured + Step 2 validated.
-  Decomposition complete: NPU GEMM/conv wins are **architectural** (`architecture_ratio` 3–14×,
-  `precision_ratio` < 1 on all GEMMs). Sign-divergence on `softmax`, `depthwise_conv2d` (headline
-  winner ≠ best INT8 engine). Trust carry-forwards: `sra_conv2d×npu` UNTRUSTED, `attn_block_fused×npu`
-  N/A, `avg_pool_token_mixer×cpu_int8` LOW-TRUST. Idle +51% cross-session resolved (static offset +
-  per-session subtraction; identity=1.000 is consistency-only). **Durable summary: §7.** Step 4
-  (operator→engine mapping) not started. Handoff `.md` files in `benchmark/` are disposable scaffolding.
-
-- **Open — pending supervisor input:**
-  - **PoolFormer vs PvT control pair** (architecture selection).
-  - **Model-level precision policy** for full ViT benchmarks (operator sweep used FP32 cpu/igpu + INT8 npu; see §7).
-
-- **Deferred:** Track-2 real-mixer shape fixes (§4); Christoforos check-in; full 18-model shortlist scope
-  decisions (§4).
-- **TODO next (where you are now — 2026-06-15):**
-
-  **Done ✓**
-  - [x] Post-process production session `20260612_143854` → `analysis_out.csv`, `runs_enriched.csv`
-  - [x] Validation gate (WINDOW_ENERGY_IS_RAW, power×time, baselines, 62 configs; all PASS)
-  - [x] Trust validation (Gate 1: 0/62 LOW-TRUST; Gate 2: `sra_conv2d×npu` UNTRUSTED)
-  - [x] Engine-selection descriptive ranking (trusted cells; precision confound documented)
-  - [x] cpu_INT8 control sweep `20260615_145614_cpu_int8` + decomposition (identity = consistency only)
-  - [x] Step 3 consolidation (regime buckets, sign-divergence, Step 4 metric basis scoped)
-
-  **Next**
-  - [ ] **Step 4:** operator→engine mapping (avg corner; rank per §7 metric basis — not raw `original_gap` where `precision_ratio` departs from 1)
-  - [ ] **Chris sign-off** on methodology + operator results (operator-level precision **resolved** via cpu_int8 control; **model-level** precision policy in §4 still needs his call)
-  - [ ] **Paper scaffold** (intro / methods incl. idle-drift caveat / results outline)
-
-  **Deferred**
-  - small/large SDPA corners; Track-2 real-mixer shape fixes (§4); full ViT shortlist scope (§4)
-  - `attn_block_fused×npu` (VitisAI crash — fusion gap on NPU unmeasurable)
-  - optional: re-measure `avg_pool_token_mixer×cpu_int8` (LOW-TRUST, CV 20.7%)

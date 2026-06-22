@@ -254,7 +254,11 @@ def run_plan(args: argparse.Namespace) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run sweep-plan measure matrix via uProf+harness")
     p.add_argument("--plan", required=True, help="Pipe-delimited sweep plan CSV")
-    p.add_argument("--uprof-dir", required=True, help="uProf session output directory")
+    p.add_argument(
+        "--uprof-dir",
+        default=None,
+        help="uProf session output directory (required when --power-backend uprof)",
+    )
     p.add_argument("--outfile", required=True, help="Harness runs.csv path")
     p.add_argument("--python", default=str(DEFAULT_PY), help="Absolute python.exe path")
     p.add_argument("--uprof-cli", default=DEFAULT_UPROF, help="AMDuProfCLI executable")
@@ -296,6 +300,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.power_backend == "amdsmi" and not args.gpu_power_dir:
         p.error("--gpu-power-dir is required when --power-backend amdsmi")
+    if args.power_backend == "uprof" and not args.uprof_dir:
+        p.error("--uprof-dir is required when --power-backend uprof")
 
     return args
 
