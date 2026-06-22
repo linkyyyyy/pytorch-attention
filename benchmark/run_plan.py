@@ -118,6 +118,67 @@ def format_command(cmd: list[str]) -> str:
     return subprocess.list2cmdline(cmd)
 
 
+def execute_job(
+    harness_cmd: list[str],
+    run_id: str,
+    args: argparse.Namespace,
+) -> int:
+    """Run one measure job with uProf wrap (default) or parallel amd-smi sampler."""
+    if args.power_backend == "uprof":
+        uprof_dir = Path(args.uprof_dir)
+        full_cmd = uprof_command_line(
+            uprof_cli=args.uprof_cli,
+            uprof_out=uprof_dir / run_id,
+            harness_cmd=harness_cmd,
+        )
+        print(f"[RUN] {run_id}")
+        print(format_command(full_cmd))
+        if args.dry_run:
+            return 0
+        uprof_dir.mkdir(parents=True, exist_ok=True)
+        return subprocess.run(full_cmd, cwd=BENCHMARK_DIR).returncode
+
+    out_csv = Path(args.gpu_power_dir) / f"{run_id}.csv"
+    sampler_cmd = [
+        str(args.python),
+        str(BENCHMARK_DIR / "gpu_power.py"),
+        "--out",
+        str(out_csv),
+        "--interval",
+        str(args.sampler_interval),
+        "--device-id",
+        str(args.device_id),
+    ]
+    print(f"[RUN] {run_id}")
+    print("  sampler:", format_command(sampler_cmd))
+    print("  harness:", format_command(harness_cmd))
+    if args.dry_run:
+        return 0
+
+    Path(args.gpu_power_dir).mkdir(parents=True, exist_ok=True)
+    sampler = subprocess.Popen(sampler_cmd, cwd=BENCHMARK_DIR)
+    time.sleep(args.sampler_lead)
+    rc = subprocess.run(harness_cmd, cwd=BENCHMARK_DIR).returncode
+    time.sleep(args.sampler_lead)
+    sampler.terminate()
+    try:
+        sampler.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        sampler.kill()
+        sampler.wait()
+
+    if (
+        (not out_csv.exists())
+        or out_csv.stat().st_size == 0
+        or sampler.returncode not in (0, None, -15)
+    ):
+        print(
+            f"[WARN] {run_id}: sampler produced no/empty trace or exited abnormally "
+            f"(rc={sampler.returncode}) — energy will be unrecoverable for this job"
+        )
+    return rc
+
+
 def iter_measure_jobs(
     plan_rows: list[dict[str, str]],
     engines: list[str],
@@ -136,7 +197,6 @@ def iter_measure_jobs(
 
 def run_plan(args: argparse.Namespace) -> int:
     plan_path = Path(args.plan)
-    uprof_dir = Path(args.uprof_dir)
     outfile = Path(args.outfile)
     python = Path(args.python)
     engines = [e.strip() for e in args.engines.split(",") if e.strip()]
@@ -176,27 +236,14 @@ def run_plan(args: argparse.Namespace) -> int:
             run_id=run_id,
             outfile=outfile,
         )
-        uprof_out = uprof_dir / run_id
-        full_cmd = uprof_command_line(
-            uprof_cli=args.uprof_cli,
-            uprof_out=uprof_out,
-            harness_cmd=harness_cmd,
-        )
 
         run_n += 1
         print()
-        print(f"[RUN] {run_id}")
-        print(format_command(full_cmd))
-
-        if args.dry_run:
-            continue
-
-        uprof_dir.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(full_cmd, cwd=BENCHMARK_DIR)
-        if result.returncode != 0:
+        rc = execute_job(harness_cmd, run_id, args)
+        if not args.dry_run and rc != 0:
             failures += 1
-            print(f"[WARN] {run_id} returned exit code {result.returncode}")
-        if args.cooldown > 0:
+            print(f"[WARN] {run_id} returned exit code {rc}")
+        if args.cooldown > 0 and not args.dry_run:
             time.sleep(args.cooldown)
 
     print()
@@ -218,11 +265,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--device-id", type=int, default=0)
     p.add_argument("--cooldown", type=float, default=5.0, help="Seconds between uProf wraps (0=off)")
     p.add_argument(
+        "--power-backend",
+        choices=["uprof", "amdsmi"],
+        default="uprof",
+        help="Power trace backend: uProf (default) or amd-smi sampler for discrete GPU",
+    )
+    p.add_argument(
+        "--gpu-power-dir",
+        default=None,
+        help="gpu_power.py CSV output directory (required when --power-backend amdsmi)",
+    )
+    p.add_argument(
+        "--sampler-interval",
+        type=float,
+        default=0.1,
+        help="amd-smi sample interval in seconds (default 0.1 = 100 ms)",
+    )
+    p.add_argument(
+        "--sampler-lead",
+        type=float,
+        default=0.5,
+        help="Seconds of sampling before/after harness for window bracketing",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print [SKIP]/[RUN] commands only; do not execute",
     )
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+
+    if args.power_backend == "amdsmi" and not args.gpu_power_dir:
+        p.error("--gpu-power-dir is required when --power-backend amdsmi")
+
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -24,7 +24,11 @@ BENCHMARK_DIR = Path(__file__).parent
 DEFAULT_RUNS = BENCHMARK_DIR / "results" / "runs.csv"
 DEFAULT_OUT = BENCHMARK_DIR / "results" / "runs_enriched.csv"
 DEFAULT_UPROF_DIR = BENCHMARK_DIR / "results" / "uprof"
+DEFAULT_GPU_POWER_DIR = BENCHMARK_DIR / "results" / "gpu_power"
 PLOT_DIR = BENCHMARK_DIR / "results" / "plots"
+
+ENERGY_UJ_PER_J = 1_000_000.0  # gpu_power.py normalizes the accumulator to microjoules
+GFX_BUSY_MIN_PCT = 5.0  # below this in a measure window => suspect placement
 
 TZ = ZoneInfo("Europe/Athens")
 MONTH_MAP = {
@@ -47,6 +51,14 @@ IDLE_OPERATOR = "idle"
 class PowerSample:
     epoch: float
     watts: float
+
+
+@dataclass(frozen=True)
+class GpuSample:
+    epoch: float
+    watts: float
+    energy_uj: float | None
+    gfx_busy: float | None
 
 
 def parse_profile_start_date(lines: Iterable[str]) -> date:
@@ -231,6 +243,112 @@ def find_uprof_csv(uprof_dir: Path, run_id: str) -> Path | None:
     return None
 
 
+def parse_amdsmi_csv(path: Path) -> list[GpuSample]:
+    """Parse gpu_power.py sampler CSV → GpuSample list (epoch seconds, no preamble)."""
+    samples: list[GpuSample] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                epoch = float(row["sample_epoch"].strip())
+                watts = float(row["power_w"].strip())
+            except (KeyError, ValueError, AttributeError):
+                continue
+
+            energy_uj: float | None = None
+            eg = row.get("energy_uj", "").strip()
+            if eg:
+                try:
+                    energy_uj = float(eg)
+                except ValueError:
+                    energy_uj = None
+
+            gfx_busy: float | None = None
+            gb = row.get("gfx_busy_pct", "").strip()
+            if gb:
+                try:
+                    gfx_busy = float(gb)
+                except ValueError:
+                    gfx_busy = None
+
+            samples.append(
+                GpuSample(epoch=epoch, watts=watts, energy_uj=energy_uj, gfx_busy=gfx_busy)
+            )
+
+    if not samples:
+        raise ValueError(f"No samples parsed from {path}")
+    return samples
+
+
+def _interp_energy(e_samples: list[GpuSample], t: float) -> float:
+    """Linear interpolation of cumulative energy (µJ); clamp at series ends."""
+    pairs = sorted(
+        [(s.epoch, s.energy_uj) for s in e_samples if s.energy_uj is not None],
+        key=lambda x: x[0],
+    )
+    if not pairs:
+        return 0.0
+    if t <= pairs[0][0]:
+        return pairs[0][1]
+    if t >= pairs[-1][0]:
+        return pairs[-1][1]
+    for i in range(len(pairs) - 1):
+        t0, e0 = pairs[i]
+        t1, e1 = pairs[i + 1]
+        if t0 <= t <= t1:
+            if t1 == t0:
+                return e0
+            frac = (t - t0) / (t1 - t0)
+            return e0 + frac * (e1 - e0)
+    return pairs[-1][1]
+
+
+def amdsmi_window_energy(
+    samples: list[GpuSample],
+    t_start: float,
+    t_end: float,
+) -> tuple[float, str]:
+    """Integrate GPU window energy (J) via SMU counter delta or power trapezoid fallback."""
+    e_samples = [s for s in samples if s.energy_uj is not None]
+    in_window = sorted(
+        [s for s in e_samples if t_start <= s.epoch <= t_end],
+        key=lambda s: s.epoch,
+    )
+    energies = [s.energy_uj for s in in_window if s.energy_uj is not None]
+    non_monotonic = any(
+        energies[i] < energies[i - 1] for i in range(1, len(energies))
+    )
+    e_end = _interp_energy(e_samples, t_end)
+    e_start = _interp_energy(e_samples, t_start)
+    usable = (
+        len(e_samples) >= 2
+        and not non_monotonic
+        and e_end >= e_start
+    )
+    if usable:
+        window_j = (e_end - e_start) / ENERGY_UJ_PER_J
+        return window_j, "counter_delta_uj"
+
+    reason = "no_counter" if not e_samples else "counter_nonmonotonic"
+    ps = [PowerSample(s.epoch, s.watts) for s in samples]
+    return integrate_power(ps, t_start, t_end), f"trapz_power_w:{reason}"
+
+
+def _amdsmi_busy_mean(
+    samples: list[GpuSample],
+    t_start: float,
+    t_end: float,
+) -> float | None:
+    vals = [
+        s.gfx_busy
+        for s in samples
+        if s.gfx_busy is not None and t_start <= s.epoch <= t_end
+    ]
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+
 def _samples_in_window_count(samples: list[PowerSample], t_start: float, t_end: float) -> int:
     return sum(1 for s in samples if t_start <= s.epoch <= t_end)
 
@@ -273,16 +391,29 @@ def _run_base(run_id: str) -> str:
     return m.group(1) if m else run_id.strip()
 
 
+def find_amdsmi_csv(gpu_power_dir: Path, run_id: str) -> Path | None:
+    """Locate per-job gpu_power.py CSV (one file brackets all repeats for a job base)."""
+    base = _run_base(run_id)
+    cand = gpu_power_dir / f"{base}.csv"
+    if cand.exists():
+        return cand
+    direct = gpu_power_dir / f"{run_id}.csv"
+    if direct.exists():
+        return direct
+    return next(gpu_power_dir.rglob(f"{base}.csv"), None)
+
+
 def _window_energy_for_row(
     row: dict[str, str],
-    uprof_dir: Path,
-) -> tuple[float, float, float, list[PowerSample]] | None:
-    """Integrate uProf window for one harness row; None if join fails."""
+    source_dir: Path,
+    backend: str,
+) -> tuple[float, float, float, list[PowerSample], str, float | None] | None:
+    """Integrate power window for one harness row; None if join fails."""
     run_id = row["run_id"]
     t_start_s = row.get("t_start_epoch", "").strip()
     t_end_s = row.get("t_end_epoch", "").strip()
     if not t_start_s or not t_end_s:
-        log_path = uprof_dir / f"{run_id}.log"
+        log_path = source_dir / f"{run_id}.log"
         if log_path.exists():
             t_start, t_end = parse_window_from_log(log_path)
         else:
@@ -290,25 +421,35 @@ def _window_energy_for_row(
     else:
         t_start, t_end = float(t_start_s), float(t_end_s)
 
-    uprof_path = find_uprof_csv(uprof_dir, run_id)
-    if not uprof_path:
-        return None
+    if backend == "uprof":
+        uprof_path = find_uprof_csv(source_dir, run_id)
+        if not uprof_path:
+            return None
+        samples = parse_uprof_csv(uprof_path)
+        window_j = integrate_power(samples, t_start, t_end)
+        return t_start, t_end, window_j, samples, "uprof_socket0_trapz", None
 
-    samples = parse_uprof_csv(uprof_path)
-    window_j = integrate_power(samples, t_start, t_end)
-    return t_start, t_end, window_j, samples
+    csv_path = find_amdsmi_csv(source_dir, run_id)
+    if not csv_path:
+        return None
+    gs = parse_amdsmi_csv(csv_path)
+    window_j, method = amdsmi_window_energy(gs, t_start, t_end)
+    busy = _amdsmi_busy_mean(gs, t_start, t_end)
+    ps = [PowerSample(s.epoch, s.watts) for s in gs]
+    return t_start, t_end, window_j, ps, method, busy
 
 
 def load_idle_mean_j(
     rows: list[dict[str, str]],
-    uprof_dir: Path,
+    source_dir: Path,
+    backend: str,
 ) -> float | None:
     """Mean idle window energy (J) over all idle captures; engine tag is metadata only."""
     values: list[float] = []
     for row in rows:
         if row.get("operator") != IDLE_OPERATOR:
             continue
-        joined = _window_energy_for_row(row, uprof_dir)
+        joined = _window_energy_for_row(row, source_dir, backend)
         if joined:
             values.append(joined[2])
     if not values:
@@ -318,14 +459,15 @@ def load_idle_mean_j(
 
 def load_dispatch_mean_j_by_engine(
     rows: list[dict[str, str]],
-    uprof_dir: Path,
+    source_dir: Path,
+    backend: str,
 ) -> dict[str, float]:
     """Mean dispatch window energy (J) per engine over all dispatch captures."""
     by_engine: dict[str, list[float]] = {}
     for row in rows:
         if row.get("operator") not in DISPATCH_OPERATORS:
             continue
-        joined = _window_energy_for_row(row, uprof_dir)
+        joined = _window_energy_for_row(row, source_dir, backend)
         if not joined:
             continue
         by_engine.setdefault(row["engine"], []).append(joined[2])
@@ -374,9 +516,10 @@ def _dedup_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def enrich_runs(
     runs_path: Path,
-    uprof_dir: Path,
+    source_dir: Path,
     out_path: Path,
     *,
+    backend: str = "uprof",
     plot: bool = False,
 ) -> list[dict[str, str]]:
     with runs_path.open(newline="", encoding="utf-8") as f:
@@ -385,12 +528,19 @@ def enrich_runs(
         raise ValueError(f"No rows in {runs_path}")
 
     fieldnames = list(rows[0].keys())
-    for col in ("window_energy_J", "idle_energy_J", "dispatch_energy_J", "energy_per_op_J"):
+    for col in (
+        "window_energy_J",
+        "idle_energy_J",
+        "dispatch_energy_J",
+        "energy_per_op_J",
+        "window_energy_method",
+        "gfx_busy_mean_pct",
+    ):
         if col not in fieldnames:
             fieldnames.append(col)
 
-    idle_mean_j = load_idle_mean_j(rows, uprof_dir)
-    dispatch_mean_j = load_dispatch_mean_j_by_engine(rows, uprof_dir)
+    idle_mean_j = load_idle_mean_j(rows, source_dir, backend)
+    dispatch_mean_j = load_dispatch_mean_j_by_engine(rows, source_dir, backend)
     if idle_mean_j is None:
         print("[WARN] no idle captures; idle_energy_J left empty — headline will be unsubtracted")
     else:
@@ -403,21 +553,38 @@ def enrich_runs(
         op = row.get("operator", "")
         engine = row["engine"]
 
-        joined = _window_energy_for_row(row, uprof_dir)
+        joined = _window_energy_for_row(row, source_dir, backend)
         if not joined:
-            print(f"[SKIP] {run_id}: uProf join failed (epochs or CSV missing)")
+            label = "uProf" if backend == "uprof" else "amd-smi"
+            print(f"[SKIP] {run_id}: {label} join failed (epochs or CSV missing)")
             row.setdefault("window_energy_J", "")
             row.setdefault("idle_energy_J", "")
             row.setdefault("dispatch_energy_J", "")
             row.setdefault("energy_per_op_J", "")
+            row.setdefault("window_energy_method", "")
+            row.setdefault("gfx_busy_mean_pct", "")
             enriched.append(row)
             continue
 
-        t_start, t_end, window_j, samples = joined
+        t_start, t_end, window_j, samples, method, busy = joined
         n_in_window = _samples_in_window_count(samples, t_start, t_end)
 
         row["window_energy_J"] = f"{window_j:.6f}"
+        row["window_energy_method"] = method
+        row["gfx_busy_mean_pct"] = f"{busy:.2f}" if busy is not None else ""
         row["energy_per_op_J"] = ""
+
+        if (
+            backend == "amdsmi"
+            and op not in DISPATCH_OPERATORS
+            and op != IDLE_OPERATOR
+            and busy is not None
+            and busy < GFX_BUSY_MIN_PCT
+        ):
+            print(
+                f"[WARN] {run_id}: mean gfx_busy={busy:.1f}% in window — R9700 may not have "
+                f"executed (possible CPU fallback / wrong adapter); energy attribution suspect"
+            )
 
         if op == IDLE_OPERATOR:
             row["idle_energy_J"] = ""
@@ -511,6 +678,18 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Integrate uProf power with harness windows")
     p.add_argument("--runs", type=Path, default=DEFAULT_RUNS, help="Input runs.csv")
     p.add_argument("--uprof-dir", type=Path, default=DEFAULT_UPROF_DIR, help="uProf CSV directory")
+    p.add_argument(
+        "--power-backend",
+        choices=["uprof", "amdsmi"],
+        default="uprof",
+        help="Power trace backend (default: uProf socket integration)",
+    )
+    p.add_argument(
+        "--gpu-power-dir",
+        type=Path,
+        default=DEFAULT_GPU_POWER_DIR,
+        help="gpu_power.py sampler CSV directory (amd-smi backend)",
+    )
     p.add_argument("--outfile", type=Path, default=DEFAULT_OUT, help="Enriched output CSV")
     p.add_argument("--plot", action="store_true", help="Save per-run power PNG with window markers")
 
@@ -539,7 +718,14 @@ def main() -> None:
             plot=args.plot,
         )
         return
-    enrich_runs(args.runs, args.uprof_dir, args.outfile, plot=args.plot)
+    source_dir = args.uprof_dir if args.power_backend == "uprof" else args.gpu_power_dir
+    enrich_runs(
+        args.runs,
+        source_dir,
+        args.outfile,
+        backend=args.power_backend,
+        plot=args.plot,
+    )
 
 
 if __name__ == "__main__":
