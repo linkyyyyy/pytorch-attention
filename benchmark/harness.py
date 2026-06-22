@@ -19,12 +19,13 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 
-from npu import VaiPartition, ensure_xint8_model, make_npu_session
-from npu.path import xint8_path_for
+if TYPE_CHECKING:
+    from npu import VaiPartition
+
 from operators import (
     DISPATCH_BASELINE_PATH,
     OPSET,
@@ -50,6 +51,9 @@ IDLE_SLEEP_S = 0.001  # window body: tight sleep loop for full warmup/window dur
 
 # None = not probed yet; set by probe_dml_ortvalue() on first iGPU session.
 _DML_ORTVALUE_AVAILABLE: bool | None = None
+
+# "unset" | working OrtValue device string | None (probe failed).
+_ROCM_DEVICE_STR: str | None = "unset"
 
 CSV_HEADER = [
     "run_id",
@@ -270,7 +274,7 @@ def _npu_cache_key(operator: str, shape_index: int, mode: str) -> str:
     return f"{operator}_s{shape_index}"
 
 
-def _write_partition_sidecar(run_id: str, partition: VaiPartition) -> None:
+def _write_partition_sidecar(run_id: str, partition: "VaiPartition") -> None:
     PARTITIONS_DIR.mkdir(parents=True, exist_ok=True)
     path = PARTITIONS_DIR / f"{run_id}.json"
     payload = {"run_id": run_id, **partition.to_dict()}
@@ -358,8 +362,9 @@ def _make_session_options(engine: str, enable_profiling: bool) -> Any:
     so.intra_op_num_threads = INTRA_OP_NUM_THREADS
     if enable_profiling:
         so.enable_profiling = True
-    if engine == "igpu":
+    if engine in ("igpu", "r9700"):
         so.enable_mem_pattern = False
+    if engine == "igpu":
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     return so
 
@@ -373,6 +378,8 @@ def _create_session(onnx_path: Path, engine: str, device_id: int, enable_profili
         providers = ["CPUExecutionProvider"]
     elif ep_engine == "igpu":
         providers = [("DmlExecutionProvider", {"device_id": device_id})]
+    elif ep_engine == "r9700":
+        providers = [("ROCMExecutionProvider", {"device_id": device_id})]
     else:
         raise ValueError(f"Unsupported engine: {engine}")
     return ort.InferenceSession(str(onnx_path), so, providers=providers)
@@ -387,11 +394,15 @@ def _check_ep_placement(sess: Any, engine: str) -> str:
             return ""
         with open(prof_file, encoding="utf-8") as f:
             data = json.load(f)
-        expected = (
-            "CPUExecutionProvider"
-            if _cpu_ep_engine(engine) == "cpu"
-            else "DmlExecutionProvider"
-        )
+        ep = _cpu_ep_engine(engine)
+        if ep == "cpu":
+            expected = "CPUExecutionProvider"
+        elif engine == "igpu":
+            expected = "DmlExecutionProvider"
+        elif engine == "r9700":
+            expected = "ROCMExecutionProvider"
+        else:
+            expected = "DmlExecutionProvider"
         fallbacks: list[str] = []
         for item in data:
             args = item.get("args", {})
@@ -440,6 +451,35 @@ def igpu_use_iobinding(device_id: int) -> bool:
     return probe_dml_ortvalue(device_id)
 
 
+def probe_rocm_ortvalue(device_id: int = 0) -> str | None:
+    """
+    Discover and cache the working OrtValue device string for ROCm EP.
+    Result is cached for the process lifetime ("unset" -> str | None).
+    """
+    global _ROCM_DEVICE_STR
+    if _ROCM_DEVICE_STR != "unset":
+        return _ROCM_DEVICE_STR
+
+    import onnxruntime as ort
+
+    probe = np.array([1.0], dtype=np.float32)
+    for cand in ("rocm", "hip", "cuda"):
+        try:
+            ort.OrtValue.ortvalue_from_numpy(probe, cand, device_id)
+            _ROCM_DEVICE_STR = cand
+            print(f"[ROCM_IO] OrtValue device '{cand}' OK")
+            return cand
+        except Exception:
+            continue
+
+    _ROCM_DEVICE_STR = None
+    print(
+        "[ROCM_IO] no device-resident OrtValue; "
+        "FALLING BACK to host feeds (window will include per-iteration H2D copy)"
+    )
+    return None
+
+
 def _create_io_binding(
     sess: Any,
     feeds: dict[str, np.ndarray],
@@ -450,6 +490,22 @@ def _create_io_binding(
     """Bind inputs/outputs once for IOBinding path. Returns None if iGPU numpy-feed fallback."""
     if engine == "igpu" and not igpu_use_iobinding(device_id):
         return None
+
+    if engine == "r9700":
+        dev = probe_rocm_ortvalue(device_id)
+        if dev is None:
+            return None
+
+        import onnxruntime as ort
+
+        io_binding = sess.io_binding()
+        for name, arr in feeds.items():
+            contiguous = np.ascontiguousarray(arr)
+            ort_value = ort.OrtValue.ortvalue_from_numpy(contiguous, dev, device_id)
+            io_binding.bind_ortvalue_input(name, ort_value)
+        for name in output_names:
+            io_binding.bind_output(name, dev, device_id)
+        return io_binding
 
     io_binding = sess.io_binding()
     bind_engine = _cpu_ep_engine(engine)
@@ -482,8 +538,8 @@ def _run_inference_iteration(
     if use_iobinding:
         assert io_binding is not None
         sess.run_with_iobinding(io_binding)
-        if engine == "igpu":
-            io_binding.synchronize_outputs()  # DirectML/iGPU only — not NPU
+        if engine in ("igpu", "r9700"):
+            io_binding.synchronize_outputs()
     else:
         assert feeds is not None and output_names is not None
         sess.run(output_names, feeds)  # VAI EP: synchronous, blocks until NPU finishes
@@ -499,7 +555,12 @@ def _run_profile_check(
     """Single profiled iteration before warmup; profiling never enters the timed window."""
     sess_profile = _create_session(onnx_path, engine, device_id, enable_profiling=True)
     print(f"[PROFILE_SESSION] providers={sess_profile.get_providers()}")
-    use_iobinding = engine != "igpu" or igpu_use_iobinding(device_id)
+    if engine == "r9700":
+        use_iobinding = probe_rocm_ortvalue(device_id) is not None
+    elif engine == "igpu":
+        use_iobinding = igpu_use_iobinding(device_id)
+    else:
+        use_iobinding = True
     io_binding = _create_io_binding(sess_profile, feeds, output_names, engine, device_id)
     _run_inference_iteration(
         sess_profile,
@@ -666,6 +727,8 @@ def _prep_npu_quantize_only(args: argparse.Namespace) -> None:
     else:
         raise SystemExit("--prep-npu-quantize requires --mode measure or dispatch")
 
+    from npu import ensure_xint8_model
+
     int8_path = ensure_xint8_model(onnx_path, meta["feeds"], force=args.force_requantize)
     print(f"[prep] {label} -> {int8_path}")
 
@@ -742,6 +805,8 @@ def run_harness(args: argparse.Namespace) -> None:
 
         if args.mode != "idle":
             if args.engine == "npu":
+                from npu import ensure_xint8_model, make_npu_session
+
                 assert onnx_path is not None and feeds is not None
                 int8_path = ensure_xint8_model(onnx_path, feeds)
                 cache_key = _npu_cache_key(
@@ -769,6 +834,8 @@ def run_harness(args: argparse.Namespace) -> None:
                     f"providers={sess.get_providers()}"
                 )
             elif args.engine == "cpu_int8":
+                from npu.path import xint8_path_for
+
                 assert onnx_path is not None and feeds is not None
                 int8_path = xint8_path_for(onnx_path)
                 if not int8_path.is_file():
@@ -819,13 +886,24 @@ def run_harness(args: argparse.Namespace) -> None:
                     enable_profiling=False,
                 )
                 print(f"[MEASURE_SESSION] run_id={run_id} providers={sess.get_providers()}")
-                use_iobinding = args.engine != "igpu" or igpu_use_iobinding(args.device_id)
+                if args.engine == "r9700":
+                    rocm_dev = probe_rocm_ortvalue(args.device_id)
+                    use_iobinding = rocm_dev is not None
+                    path = (
+                        f"iobinding+{rocm_dev}"
+                        if use_iobinding
+                        else "sess.run(feeds) HOST-FEED-FALLBACK"
+                    )
+                    print(f"[ROCM_IO] run_id={run_id} inference path={path}")
+                elif args.engine == "igpu":
+                    use_iobinding = igpu_use_iobinding(args.device_id)
+                    path = "iobinding+dml" if use_iobinding else "sess.run(feeds)"
+                    print(f"[DML_IO] run_id={run_id} inference path={path}")
+                else:
+                    use_iobinding = True
                 io_binding = _create_io_binding(
                     sess, feeds, output_names, args.engine, args.device_id
                 )
-                if args.engine == "igpu":
-                    path = "iobinding+dml" if use_iobinding else "sess.run(feeds)"
-                    print(f"[DML_IO] run_id={run_id} inference path={path}")
         else:
             use_iobinding = False
 
@@ -864,7 +942,7 @@ def run_harness(args: argparse.Namespace) -> None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Operator energy measurement harness")
     parser.add_argument("--operator", default="", help="Registry operator name (measure mode)")
-    parser.add_argument("--engine", required=True, choices=["cpu", "cpu_int8", "igpu", "npu"])
+    parser.add_argument("--engine", required=True, choices=["cpu", "cpu_int8", "igpu", "npu", "r9700"])
     parser.add_argument("--duration", type=float, default=30.0)
     parser.add_argument("--warmup", type=float, default=5.0)
     parser.add_argument("--repeats", type=int, default=5)
