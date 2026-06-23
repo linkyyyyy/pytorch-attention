@@ -70,31 +70,29 @@ def read_sample(handle: Any, device_id: int) -> dict[str, str]:
     # -------------------------------------------------------------------------
 
     try:
-        # Board / total GPU power (watts).
-        power_info = amdsmi.amdsmi_get_power_info(handle, amdsmi.AmdSmiPowerType.POWER_TYPE_TOTAL_BOARD)
+        # Board / total GPU power (watts) via socket_power on gfx1201/R9700.
+        power_info = amdsmi.amdsmi_get_power_info(handle)
         if isinstance(power_info, dict):
-            mw = power_info.get("average_socket_power") or power_info.get("power") or power_info.get("current")
-            if mw is not None:
-                out["power_w"] = str(float(mw) / 1000.0 if float(mw) > 1000 else float(mw))
-        elif power_info is not None:
-            out["power_w"] = str(float(power_info))
+            socket_power = power_info.get("socket_power")
+            if socket_power is not None:
+                try:
+                    pw = float(socket_power)
+                    # On this card socket_power is confirmed watts (idle ≈ 33, TBP ≈ 300);
+                    # the >1000 guard is not expected to fire.
+                    out["power_w"] = str(pw / 1000.0 if pw > 1000 else pw)
+                except (TypeError, ValueError):
+                    out["power_w"] = ""
     except Exception:
-        try:
-            power_info = amdsmi.amdsmi_get_power_info(handle)
-            if isinstance(power_info, dict) and "average_socket_power" in power_info:
-                out["power_w"] = str(float(power_info["average_socket_power"]) / 1000.0)
-        except Exception:
-            pass
+        pass
 
     try:
-        # SMU energy accumulator (microjoules). Expected to fail on many RDNA cards.
+        # SMU energy accumulator (microjoules): accumulator * counter_resolution.
         energy = amdsmi.amdsmi_get_energy_count(handle)
         if isinstance(energy, dict):
-            uj = energy.get("energy_accumulator") or energy.get("energy") or energy.get("value")
-            if uj is not None:
-                out["energy_uj"] = str(int(uj))
-        elif energy is not None:
-            out["energy_uj"] = str(int(energy))
+            accum = energy.get("energy_accumulator")
+            resolution = energy.get("counter_resolution")
+            if accum is not None and resolution is not None:
+                out["energy_uj"] = str(float(accum) * float(resolution))
     except Exception:
         out["energy_uj"] = ""
 

@@ -379,7 +379,10 @@ def _create_session(onnx_path: Path, engine: str, device_id: int, enable_profili
     elif ep_engine == "igpu":
         providers = [("DmlExecutionProvider", {"device_id": device_id})]
     elif ep_engine == "r9700":
-        providers = [("ROCMExecutionProvider", {"device_id": device_id})]
+        providers = [
+            ("MIGraphXExecutionProvider", {"device_id": device_id}),
+            "CPUExecutionProvider",
+        ]
     else:
         raise ValueError(f"Unsupported engine: {engine}")
     return ort.InferenceSession(str(onnx_path), so, providers=providers)
@@ -400,7 +403,7 @@ def _check_ep_placement(sess: Any, engine: str) -> str:
         elif engine == "igpu":
             expected = "DmlExecutionProvider"
         elif engine == "r9700":
-            expected = "ROCMExecutionProvider"
+            expected = "MIGraphXExecutionProvider"
         else:
             expected = "DmlExecutionProvider"
         fallbacks: list[str] = []
@@ -463,9 +466,12 @@ def probe_rocm_ortvalue(device_id: int = 0) -> str | None:
     import onnxruntime as ort
 
     probe = np.array([1.0], dtype=np.float32)
-    for cand in ("rocm", "hip", "cuda"):
+    for cand in ("Hip", "hip", "rocm", "cuda", "gpu"):
         try:
-            ort.OrtValue.ortvalue_from_numpy(probe, cand, device_id)
+            ort_value = ort.OrtValue.ortvalue_from_numpy(probe, cand, device_id)
+            placement = ort_value.device_name().lower()
+            if placement == "cpu" or placement.startswith("cpu"):
+                continue
             _ROCM_DEVICE_STR = cand
             print(f"[ROCM_IO] OrtValue device '{cand}' OK")
             return cand
@@ -473,10 +479,7 @@ def probe_rocm_ortvalue(device_id: int = 0) -> str | None:
             continue
 
     _ROCM_DEVICE_STR = None
-    print(
-        "[ROCM_IO] no device-resident OrtValue; "
-        "FALLING BACK to host feeds (window will include per-iteration H2D copy)"
-    )
+    print("[ROCM_IO] HOST-FEED-FALLBACK")
     return None
 
 
