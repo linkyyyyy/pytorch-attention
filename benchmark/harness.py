@@ -456,30 +456,29 @@ def igpu_use_iobinding(device_id: int) -> bool:
 
 def probe_rocm_ortvalue(device_id: int = 0) -> str | None:
     """
-    Discover and cache the working OrtValue device string for ROCm EP.
-    Result is cached for the process lifetime ("unset" -> str | None).
+    r9700/MIGraphX I/O policy: host-feed by design.
+
+    MIGraphX EP (ROCm 7.1 / ORT 1.23.1) does not accept externally-allocated
+    device-resident OrtValues bound via IOBinding — run_with_iobinding raises
+    'std::get: wrong index for variant' in migraphx_program_run_async because the
+    EP manages its own host-accessible device buffers. Device-resident binding is
+    therefore unavailable, and is also excluded by the agreed methodology: we
+    measure host-fed execution and subtract a loop-matched transfer baseline to
+    isolate GPU efficiency, which requires the transfer to be present and
+    consistent in every measured window.
+
+    Returns None unconditionally -> callers host-feed via sess.run(feeds).
+    Signature and return type are unchanged so all callers are untouched.
     """
     global _ROCM_DEVICE_STR
     if _ROCM_DEVICE_STR != "unset":
         return _ROCM_DEVICE_STR
-
-    import onnxruntime as ort
-
-    probe = np.array([1.0], dtype=np.float32)
-    for cand in ("Hip", "hip", "rocm", "cuda", "gpu"):
-        try:
-            ort_value = ort.OrtValue.ortvalue_from_numpy(probe, cand, device_id)
-            placement = ort_value.device_name().lower()
-            if placement == "cpu" or placement.startswith("cpu"):
-                continue
-            _ROCM_DEVICE_STR = cand
-            print(f"[ROCM_IO] OrtValue device '{cand}' OK")
-            return cand
-        except Exception:
-            continue
-
     _ROCM_DEVICE_STR = None
-    print("[ROCM_IO] HOST-FEED-FALLBACK")
+    print(
+        f"[ROCM_IO] host-feed by design (device_id={device_id}); MIGraphX EP "
+        "device-resident IOBinding unsupported on this stack and excluded by "
+        "transfer-baseline methodology"
+    )
     return None
 
 
@@ -895,7 +894,7 @@ def run_harness(args: argparse.Namespace) -> None:
                     path = (
                         f"iobinding+{rocm_dev}"
                         if use_iobinding
-                        else "sess.run(feeds) HOST-FEED-FALLBACK"
+                        else "sess.run(feeds) host-feed (by design)"
                     )
                     print(f"[ROCM_IO] run_id={run_id} inference path={path}")
                 elif args.engine == "igpu":
