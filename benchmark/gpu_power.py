@@ -91,7 +91,8 @@ def read_sample(handle: Any, device_id: int) -> dict[str, str]:
         if isinstance(energy, dict):
             accum = energy.get("energy_accumulator")
             resolution = energy.get("counter_resolution")
-            if accum is not None and resolution is not None:
+            # gfx1201 accumulator is dead (always 0); recording "0.0" would fool parse_energy's Branch-A selector — leave energy_uj blank so it uses trapezoidal.
+            if accum is not None and resolution is not None and float(accum) != 0.0:
                 out["energy_uj"] = str(float(accum) * float(resolution))
     except Exception:
         out["energy_uj"] = ""

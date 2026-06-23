@@ -323,7 +323,7 @@ def amdsmi_window_energy(
     usable = (
         len(e_samples) >= 2
         and not non_monotonic
-        and e_end >= e_start
+        and e_end > e_start  # strict: a dead/flat counter (gfx1201 reads 0) must fall through to trapezoidal
     )
     if usable:
         window_j = (e_end - e_start) / ENERGY_UJ_PER_J

@@ -42,7 +42,7 @@ a single narrow finding like "the NPU likes matmuls."
 |---|---|---|
 | **HX 370 tower** (lab-provided) | **HX 370 measurements** | AMD Ryzen AI 9 HX 370: Zen 5 CPU + Radeon 890M iGPU + XDNA NPU. Windows-based. Phase 1 operator sweep complete (§7). |
 | **Personal laptop** (2024 ROG Strix G16) | **Development only** | Windows 11, NVIDIA RTX 4070. The CUDA/NVIDIA GPU is **irrelevant to this project** — it serves a separate CUDA-learning effort. Never used for measurement. |
-| **R9700 tower** (lab-provided, Phase 2) | **R9700 measurements only** | AMD Radeon AI PRO R9700: RDNA4 (Navi 48, **gfx1201**), 32 GB GDDR6, 256-bit, ~300 W TBP — discrete card on its **own power rail**. **Ubuntu 24.04**, ROCm + PyTorch (AMD Radeon guide). Separate machine from the HX 370 tower; host CPU/RAM TBC on arrival. |
+| **R9700 tower** (lab-provided, Phase 2) | **R9700 measurements only** | Host: Intel i7-12700, 32 GB, Ubuntu 24.04, Python 3.12.3. GPU: Radeon AI PRO R9700 (**gfx1201** / RDNA4), 32 GB GDDR6, ~300 W TBP, **COMPUTE** profile (`rocm-smi --setprofile 4`). Stack: ROCm 7.1.52802, PyTorch 2.13.0.dev+rocm7.1, onnxruntime-migraphx 1.23.1, MIGraphX 2.14.0. **Do not change ROCm/OS versions.** |
 
 The AMD Ryzen AI Software SDK is **Windows-based**.
 
@@ -98,33 +98,37 @@ Per-engine comparison relies on **controlled execution** (one ORT execution prov
 **baseline subtraction**, not separate hardware power rails. State this explicitly in the paper
 methodology.
 
-### R9700 Measurement Scope Notes (Phase 2)
+### R9700 Measurement Scope Notes (Phase 2 — updated 2026-06-23)
 
-- **Engine `r9700`, FP32, ONNX Runtime ROCm EP** (not MIGraphX — ROCm EP dispatches op-by-op,
-  preserving operator isolation and keeping the `fused_block` tier unfused/comparable to CPU+iGPU).
-- **Power path:** discrete card is invisible to uProf. Standalone `gpu_power.py` amd-smi sampler
-  brackets each harness invocation (own process → its host cost stays off the measured rail).
-  Window energy = SMU energy-accumulator **counter delta** (Branch A) when the counter is populated,
-  else **trapezoidal integration** of board power (Branch B); chosen per-window in `parse_energy.py`
-  and recorded in `window_energy_method`.
-- **Cross-instrument + cross-EP asymmetry (paper limitation):** 3 APU engines on uProf package
-  counters (Windows, DirectML/Vitis) vs R9700 on its own board telemetry (TBP-class: VRAM+VRM+fans,
-  driver-estimated) on ROCm/Linux. Within-engine and idle-subtracted deltas are clean; absolute
-  cross-instrument comparisons carry the caveat. R9700-vs-iGPU is cross-EP (ROCm vs DirectML) and
-  cross-OS — frame R9700 as its own engine on the best-available stack, naming the bandwidth-vs-runtime
-  confound.
-- **Central hypothesis:** does dedicated high-bandwidth GDDR6 give memory-bound operators a GPU winner
-  the shared-LPDDR5x 890M never got? Requires ROCm **device-resident IOBinding** — host-feed fallback
-  measures PCIe, not VRAM, and invalidates memory-bound rows (tripwire: `[ROCM_IO] HOST-FEED-FALLBACK`).
-- **Net metric (analog of §3 headline):** `energy_per_op_J = (window_energy_J − idle_energy_J)/iterations`,
-  idle = duration-matched GPU idle window (discrete rail is a cleaner floor than the APU package).
-  Same 21-op frame, avg corner, N=197, D=768. **Dispatch baseline runs ON the GPU** (ROCm EP), so unlike
-  the NPU CPU-fallback dispatch, dispatch-subtraction is valid for r9700.
-- **Gates before any R9700 number counts:** ROCm EP present; device_id alignment via
-  `ROCR_VISIBLE_DEVICES`; energy = accumulator × counter_resolution; IOBinding device-string live;
-  gfx_busy placement gate. Full sequence: `benchmark/RADEON_R9700_RUNBOOK.md`.
-- **Code:** branch `RadeonR9700` off `main`; additive `r9700` engine; new `benchmark/gpu_power.py`,
-  `benchmark/tests/test_parse_energy_amdsmi.py`. uProf path numerically untouched.
+- **Runtime (Chris signed off):** engine `r9700` uses the **MIGraphX Python API directly**, not ORT.
+  ROCm EP was removed from ORT 1.23+; the wheel's only GPU EP is MIGraphX, which fails on gfx1201
+  (`std::get: wrong index for variant` on every ORT path). Same ONNX graphs/compiler → kernel-level
+  comparability; runtime deviation documented in methodology.
+- **Execution:** `compile(get_target("gpu"), offload_copy=False)` + one `to_gpu` upload (resident
+  inputs). `run()` enqueues async (~4 µs) vs ~117 µs kernel — harness loops `sync_every` (default
+  **64**, `--sync-every`) then `gpu_sync()`; injected `execute_fn` + `iter_multiplier` in shared
+  `_run_repeat` (CSV schema unchanged). Day-1 validated: gfx_busy ~100%, ~242 W active (idle ~33 W).
+- **Power (Branch B):** discrete card invisible to uProf; `gpu_power.py` amd-smi sampler brackets
+  each harness run. Energy accumulator **dead** on gfx1201 (`energy_accumulator=0`) → trapezoidal
+  integration of `socket_power` (watts, no /1000; `current_socket_power='N/A'`). Branch-A selector
+  fixed 2026-06-23: `parse_energy` requires `e_end > e_start`; `gpu_power` leaves `energy_uj` blank
+  when accumulator is 0 (no fake `"0.0"`). Re-enrich validate trace → expect ~7 kJ,
+  `window_energy_method=trapezoid`.
+- **Cross-instrument caveat:** HX 370 on uProf package (Windows/DML/Vitis) vs R9700 board telemetry
+  (TBP-class, Linux/ROCm). Idle-subtracted within-engine deltas are clean; absolute cross-machine
+  comparisons carry the caveat.
+- **Net metric:** same headline formula as §3 on the discrete rail. **Idle + dispatch baselines
+  still TODO.** Transfer baseline (Chris Option 2) likely **moot** — `offload_copy=False` residency
+  = one H2D, no per-iter transfer; confirm with Chris before building one.
+- **Sweep correctness (`operators.py`, 2026-06-23):** `shape_index` 0=small (N=49) / 1=avg (N=197) /
+  2=large (N=3136); Phase-1 headline corner = **avg**. Day-1 validation used index 0 (small) —
+  mechanism-valid, not the headline corner. Default `operators.py` builds index 0 only; run
+  `operators.py --all-shapes` before sweep. Avg index is **not** uniformly 1 (XCiT etc. have own
+  profiles) — drive sweep via `profile_indices_for_corner(op, 'avg')`, never hardcode `--shape-index 1`.
+- **Paper caveats:** MIGraphX-direct runtime; gfx1201 kernel immaturity (ecosystem-wide); no
+  instantaneous power (socket integration OK for Tier 1 steady-state, weak for Tier 2 transients).
+- **Code:** branch `RadeonR9700`; `harness.py` (migraphx_direct), `gpu_power.py`, smoke/diag scripts.
+  Runbook: `benchmark/RADEON_R9700_RUNBOOK.md` (gates partially superseded by Day-1 decisions).
 
 ---
 
@@ -173,6 +177,10 @@ before adopting.
 Only **avg** matches a verbatim repo block geometry (canonical ViT-B/16: 197 tokens, D=768,
 12 heads, head_dim=64). **small** (N=49) and **large** (N=3136) are controlled DSE points — real
 sequence lengths from the repo pyramid (EfficientFormer MHSA / PvT stage 1) with standardized D/heads.
+
+**`shape_index` in `operators.py`:** 0=small / 1=avg / 2=large (Phase-1 pin = **avg**). Default build
+emits index 0 only — use `operators.py --all-shapes` before sweep. Per-operator avg index varies
+(e.g. XCiT); use `profile_indices_for_corner(op, 'avg')`, not a global `--shape-index 1`.
 Note: repo `VisionTransformer()` default is **4 heads / head_dim=192** — deliberately overridden to
 canonical 12/64 for comparable SDPA geometry. See `directives/attention_block_dimensions.md`.
 
@@ -302,6 +310,10 @@ PyTorch
    exports to ONNX successfully may still fail the Vitis AI compiler (unsupported ops, dynamic
    shapes, control flow). Run `onnxruntime.InferenceSession(path, providers=["VitisAIExecutionProvider"])`
    on each shortlisted model before committing to it. Discover export failures early.
+6. **R9700 is a deliberate runtime exception (Phase 2).** HX 370 engines share one ORT build; R9700
+   uses MIGraphX Python API direct because ORT's MIGraphX EP is broken on gfx1201. Same ONNX graphs
+   and compiler preserve kernel comparability; document the runtime deviation. Power is Branch B
+   (socket integration, no instantaneous reading). Transfer baseline must match `sync_every` cadence.
 
 ---
 
@@ -388,7 +400,7 @@ Full method and sign-divergence findings summarized in prior context — see arc
 | Measurements | 1 week | **Done (2026-06-12)** — three-engine production sweep captured. |
 | Refinement and validation | 1 week | **Done (2026-06-17)** — trust validation, cpu_INT8 decomposition, Step 4 mapping. |
 | Preparation of the report | 2 weeks | In progress (HX 370 numbers validated). |
-| **Phase 2 — R9700 fourth engine** | ~1 week | **← current phase (from 2026-06-22).** Tower execution + sweep. Runbook: `benchmark/RADEON_R9700_RUNBOOK.md`. |
+| **Phase 2 — R9700 fourth engine** | ~1 week | **← current phase.** Day 1 (2026-06-23): MIGraphX-direct path + Branch B power validated. Sweep pending. |
 
 **Operator ordering tip:** GEMM first as a *pipeline plumbing test* (simplest op, proves the loop),
 then move immediately to **scaled-dot-product attention** as the first *real* operator — that's what
@@ -451,34 +463,28 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 ## 12. CURRENT STATUS & TASKS
 
-**Phase:** Phase 2 — R9700 fourth engine (`RadeonR9700` branch off `main`).
+**Phase:** Phase 2 — R9700 (`RadeonR9700` branch).
 **Phase 1:** HX 370 operator sweep **complete** — measured findings in §7; Step 4 mapping done (2026-06-17).
-**Last update:** 2026-06-22 — R9700 harness, `gpu_power.py`, amd-smi parse/join coded (staged on tower branch).
+**Last update:** 2026-06-23 — Day 1: EP pivot (MIGraphX-direct) + Branch B power validated end-to-end.
 
 **Dated session log (2026-06-02 → present):** `PROJECT_ARCHIVE.md` — use for Hermes and historical lookup.
 
-### Tomorrow (2026-06-23) — R9700 tower execution (`RadeonR9700` branch)
+### Phase 2 — R9700 Day 1 (2026-06-23)
 
-Pre: commit the staged branch (manual). Clean standalone terminal + Cursor CLOSED for any
-power capture. Source ROCm env. Full detail: `benchmark/RADEON_R9700_RUNBOOK.md`.
+**Decisions:** ROCm EP dead in ORT 1.23.1; MIGraphX EP broken on gfx1201 via ORT → **MIGraphX Python
+API direct** (Chris signed off). Power: **Branch B** (`socket_power` integration; accumulator dead).
+Committed on `RadeonR9700`: `harness.py`, `gpu_power.py`, `migraphx_smoke.py`, `migraphx_measure_one.py`,
+`smoke_pathb.sh`, `validate_r9700_integrated.sh`, `diag_r9700.sh`, `mgx_core_test.sh`.
 
-- [ ] **0. Gate zero:** `get_available_providers()` lists `ROCMExecutionProvider`? If absent, decide
-      MIGraphX-for-isolated vs install ROCm-EP build before proceeding.
-- [ ] **1. Versions:** record ROCm version + `ort.__version__` into `results/metadata.json`.
-- [ ] **2. Host/device identity:** `rocminfo` + `amd-smi list` → R9700 BDF; set `ROCR_VISIBLE_DEVICES`
-      so it is device 0 for ORT EP + OrtValue + amdsmi handle; re-confirm providers under mask.
-- [ ] **3. amdsmi energy verification** → FIX `gpu_power.read_sample`: `energy_uj = accumulator ×
-      counter_resolution` (not accumulator alone); confirm `power_w` key/unit. Counter populated?
-      => Branch A (counter-delta); else Branch B (integration). This is the A/B verdict.
-- [ ] **4. Sampler smoke (5 s, idle):** `power_w` populated, `gfx_busy` moves, `energy_uj` yes/no.
-- [ ] **5. Build FP32 graphs:** `python operators.py` → `onnx_graphs/` populated.
-- [ ] **6. Parse-layer regression:** `pytest benchmark/tests/test_parse_energy_amdsmi.py` (must pass).
-- [ ] **7. Single-op live smoke (real GPU, `ffn_gemm`):** REQUIRE `[ROCM_IO] OrtValue device 'X' OK`
-      (NOT HOST-FEED-FALLBACK) + `EP_OK=ROCMExecutionProvider`; enrich that one trace and confirm
-      `gfx_busy` high, no placement WARN. HOST-FEED-FALLBACK => fix `probe_rocm_ortvalue` before
-      trusting any memory-bound row (central-hypothesis tripwire).
+**Analysis fix (staged 2026-06-23, off-tower):** `parse_energy.amdsmi_window_energy` Branch-A guard
+`e_end >= e_start` → `e_end > e_start`; `gpu_power.read_sample` skips `energy_uj` when accumulator==0.
+Re-enrich validate trace → expect ~7 kJ, `window_energy_method=trapezoid`.
 
-**Gate to clear before Wed:** power path validated end-to-end on one operator.
+**Open (next session):**
+- [off-tower] Re-enrich today's validate trace with staged parse/gpu_power fixes
+- [tower] `operators.py --all-shapes`; sweep via `profile_indices_for_corner(op,'avg')` (not hardcoded index 1)
+- [tower] r9700 idle + dispatch baselines (transfer baseline likely moot — confirm w/ Chris)
+- [tower] 21-op sweep (MIGraphX-direct, **avg** corner)
 
 ### HX 370 / paper (backlog)
 

@@ -599,6 +599,40 @@ def _append_csv_row(outfile: Path, row: dict[str, Any]) -> None:
         writer.writerow({k: row.get(k, "") for k in CSV_HEADER})
 
 
+def _migraphx_compile_resident(onnx_path: Path) -> Any:
+    """Compile ONNX to the MIGraphX GPU target with inputs resident (offload_copy=False)."""
+    import migraphx
+
+    prog = migraphx.parse_onnx(str(onnx_path))
+    prog.compile(migraphx.get_target("gpu"), offload_copy=False)
+    return prog
+
+
+def _migraphx_upload_resident_inputs(prog: Any) -> dict[str, Any]:
+    """Upload all program parameters to GPU once (single H2D); reused across repeats."""
+    import migraphx
+
+    pshapes = prog.get_parameter_shapes()
+    gpu_args: dict[str, Any] = {}
+    for name in pshapes:
+        arr = np.random.rand(*pshapes[name].lens()).astype(np.float32)
+        gpu_args[name] = migraphx.to_gpu(migraphx.argument(arr))
+    return gpu_args
+
+
+def _make_migraphx_executor(prog: Any, gpu_args: dict[str, Any], sync_every: int) -> Callable[[], None]:
+    """execute_fn: enqueue `sync_every` async runs, then drain with gpu_sync so the
+    wall-clock window contains real GPU work (run() is ~4us enqueue vs ~117us kernel)."""
+    import migraphx
+
+    def _execute() -> None:
+        for _ in range(sync_every):
+            prog.run(gpu_args)
+        migraphx.gpu_sync()
+
+    return _execute
+
+
 def _run_repeat(
     *,
     run_id: str,
@@ -625,9 +659,13 @@ def _run_repeat(
     use_iobinding: bool,
     ep_note: str,
     csv_opset: int | str,
+    execute_fn: Callable[[], None] | None = None,
+    iter_multiplier: int = 1,
 ) -> None:
     def execute() -> None:
-        if mode == "idle":
+        if execute_fn is not None:
+            execute_fn()
+        elif mode == "idle":
             time.sleep(IDLE_SLEEP_S)  # full window = many sleeps via _duration_loop (no ORT)
         else:
             assert sess is not None
@@ -655,6 +693,7 @@ def _run_repeat(
     )
 
     iterations, wall_time_s = _duration_loop(execute, window_s)
+    iterations = iterations * iter_multiplier  # r9700: each tick = sync_every kernel runs; *1 for all other engines
 
     t_end = time.time()
     print(
@@ -665,6 +704,7 @@ def _run_repeat(
     if mode == "idle":
         mean_latency_ms: float | str = ""
     else:
+        # NOTE r9700: amortized enqueue-drained throughput, not kernel latency (energy comes from the power trace).
         mean_latency_ms = (wall_time_s / iterations * 1000.0) if iterations else float("nan")
 
     notes_parts = [
@@ -797,6 +837,17 @@ def run_harness(args: argparse.Namespace) -> None:
         else f"idle_{args.engine}"
     )
 
+    mgx_executor = None
+    mgx_ep_note = ""
+    if args.engine == "r9700" and args.mode != "idle":
+        assert onnx_path is not None
+        mgx_prog = _migraphx_compile_resident(onnx_path)
+        mgx_gpu_args = _migraphx_upload_resident_inputs(mgx_prog)
+        mgx_executor = _make_migraphx_executor(mgx_prog, mgx_gpu_args, args.sync_every)
+        mgx_ep_note = f"migraphx_direct: target=gpu; offload_copy=False; resident; sync_every={args.sync_every}"
+        print(f"[MEASURE_SESSION] run_id={base_run_id} backend=migraphx_direct offload_copy=False sync_every={args.sync_every}")
+        print(f"[ROCM_IO] run_id={base_run_id} resident inputs (one H2D, gpu_sync drain)")
+
     for repeat_idx in range(args.repeats):
         run_id = resolve_run_id(base_run_id, repeat_idx)
         sess = None
@@ -870,6 +921,13 @@ def run_harness(args: argparse.Namespace) -> None:
                 io_binding = _create_io_binding(
                     sess, feeds, output_names, ep_cpu, args.device_id
                 )
+            elif args.engine == "r9700":
+                sess = None
+                io_binding = None
+                use_iobinding = False
+                if repeat_idx == 0:
+                    ep_note = mgx_ep_note
+                    print(f"[EP_CHECK] run_id={run_id} {mgx_ep_note}")
             else:
                 if repeat_idx == 0:
                     ep_note = _run_profile_check(
@@ -934,6 +992,8 @@ def run_harness(args: argparse.Namespace) -> None:
             use_iobinding=use_iobinding if args.mode != "idle" else False,
             ep_note=ep_note,
             csv_opset=csv_opset,
+            execute_fn=mgx_executor if args.engine == "r9700" else None,
+            iter_multiplier=args.sync_every if args.engine == "r9700" else 1,
         )
 
         if repeat_idx < args.repeats - 1:
@@ -949,6 +1009,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup", type=float, default=5.0)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--device-id", type=int, default=0)
+    parser.add_argument(
+        "--sync-every",
+        type=int,
+        default=64,
+        help="r9700/MIGraphX: async enqueue depth drained per gpu_sync (window granularity)",
+    )
     parser.add_argument("--mode", choices=["measure", "idle", "dispatch"], default="measure")
     parser.add_argument("--shape-index", type=int, default=0)
     parser.add_argument(
