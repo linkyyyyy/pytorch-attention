@@ -117,7 +117,10 @@ methodology.
 - **Orchestration:** `sweep_r9700_avg.sh` — `GATE=1` (ffn_gemm avg s2 smoke) then `RUN=1` (21 plan
   rows × 5 repeats, chunked). `run_plan.py` r9700 run-ids: `r9700_{shape_class}_{op}_s{idx}`; sampler
   lifecycle hardened (`start_new_session`, process-group kill, stale `pkill` at session start).
-  Dispatch baseline run-id **`dispatch_r9700_base`** (not `*_r9700` — `_strip_repeat_suffix` trap).
+  **Run-id rule (committed fix):** dispatch baseline renamed `dispatch_baseline_r9700` →
+  `dispatch_r9700_base` — trailing `_r<digits>` was eaten by harness `_strip_repeat_suffix`, breaking
+  the power-trace join. **No run-id may end in `_r<digits>`.** Orphan-sampler hardening + skip
+  `energy_uj` when accumulator==0 also committed on branch.
 - **Net metric:** same headline formula as §3 on the discrete rail. Full sweep captures open/mid/close
   **idle** + **`dispatch_r9700_base`** in-session. Transfer baseline likely **moot** (`offload_copy=False`);
   confirm with Chris.
@@ -461,35 +464,82 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 **Phase:** Phase 2 — R9700 (`RadeonR9700` branch).
 **Phase 1:** HX 370 operator sweep **complete** — measured findings in §7; Step 4 mapping done (2026-06-17).
-**Last update:** 2026-06-24 — full avg-corner R9700 sweep captured; post-sweep validation/analysis pending.
+**Last update:** 2026-06-24 — Day 3 avg-corner sweep complete + committed; off-tower analysis pipeline ran; two reviewer-pending issues open (see below).
 
 **Dated session log (2026-06-02 → present):** `PROJECT_ARCHIVE.md` — use for Hermes and historical lookup.
 
-### Phase 2 — R9700 (2026-06-24): full sweep captured
+### Day 3 — avg-corner sweep + off-tower analysis (2026-06-24, session `20260624_133311`)
 
-**Session:** `20260624_133311` — `RUN=1 ./sweep_r9700_avg.sh` completed after `GATE=1` pass.
-**Primary artifact (force-staged):** `benchmark/results/runs_20260624_133311_r9700_enriched.csv`
-(~110 rows: 21 avg-corner plan entries × 5 repeats + idle/dispatch baselines). All measure rows
-observed `window_energy_method=trapz_power_w:*`, `gfx_busy_mean_pct` ~100% on compute ops.
+**STATUS:** avg-corner sweep **COMPLETE**, enriched + committed on `RadeonR9700`. Analysis pipeline ran
+off-tower; baseline policy **verified**; **two analysis issues OPEN** (reviewer-pending, not closed).
 
-**Python/script changes on branch (tower-validated):**
+**Sweep:** 21 configs × 5 repeats + 4 idle + 1 dispatch = **110 rows**. All **105** measure rows
+`window_energy_method=trapz_power_w:no_counter` (Branch B — gfx1201 SMU accumulator dead).
+`gfx_busy_mean_pct` ≥ **97.7%** all rows. Worst repeat window CV **2.32%**; iteration CV **<0.5%**.
+Avg-corner active power ~**120–300 W** tracks arithmetic intensity even at ~100% occupancy.
 
-| File | Change |
+**Baseline policy** (verified via `analysis.py`):
+
+| Item | Value |
 |---|---|
-| `harness.py` | `r9700` = MIGraphX-direct (`execute_fn`, `iter_multiplier`, `--sync-every`); host-feed I/O policy |
-| `gpu_power.py` | `socket_power` (W); blank `energy_uj` when accumulator==0 |
-| `parse_energy.py` | Branch-A guard `e_end > e_start`; amdsmi join unchanged |
-| `run_plan.py` | r9700 run-id `r9700_{shape_class}_{op}_s{idx}`; sampler PG kill + stale cleanup |
-| `sweep_r9700_avg.sh` | `GATE=1` / `RUN=1`; `dispatch_r9700_base`; method-string gate post-enrich |
+| Idle floor | Session-mean **285.43 J** (n=4: open / mid1 / mid2 / close) |
+| Dispatch floor | **2277.78 J** (`dispatch_r9700_base`, on-GPU MIGraphX) |
+| `WINDOW_ENERGY_IS_RAW` | `True` |
+| Headline | `energy_per_op_J = (window − idle) / iters` |
+| Secondary | `energy_per_op_dispatch = (window − dispatch) / iters` |
 
-**Done:** GATE=1 (~8.9 kJ avg `ffn_gemm` s2); full sweep + enrich; automated `[GATE OK]` on method strings.
+**Idle drift:** +**57.4%** open→close (225→354 J). Absolute impact on net **<1%** (idle ≪ ~7.4 kJ
+window energy on heavy ops).
 
-**Next (validation / parsing — may be done later today, off-tower OK):**
-- [ ] Gate review: per-row `window_energy_J` vs `mean_power × 30 s`; repeat CV; idle drift (open vs close)
-- [ ] Run `analysis.py` (or equivalent) on enriched CSV → `energy_per_op_J` headline grid
-- [ ] Cross-engine comparison framing vs HX 370 §7 (caveat: different instrument + runtime)
-- [ ] Flag weak/gfx1201-immature ops; confirm transfer baseline moot with Chris
-- [ ] Commit staged artifacts + script changes when review passes
+**Fusion gap** (`sdpa_avg`, engine `r9700`): isolated sum **0.04714** vs fused **0.04472 J/op** ≈ **5.1%**.
+
+**Run-id collision fix (committed):** see §3 R9700 notes — `dispatch_r9700_base` naming + no `_r<digits>`
+suffix rule; gpu_power orphan-sampler hardening committed.
+
+**Pipeline executed off-tower (not reviewer-closed):**
+
+- [x] `analysis.py` → `benchmark/results/analysis_out_r9700.csv`
+- [x] `r9700_cross_engine_analysis.py` → `r9700_vs_hx370_comparison.csv`, `R9700_CROSS_ENGINE_REPORT.md`
+- [x] Draft → `paper/methodology_limitations_r9700.md`
+
+**OPEN (reviewer-pending — block paper-grade):**
+
+1. **Cross-engine join:** `r9700_cross_engine_analysis.py` still assigns `NaN` silently on join miss.
+   Automated off-tower audit (21/21 `op_key` rows, zero numeric NaNs in comparison CSV) passed, but
+   win-counts and `op_key` mapping need **reviewer sign-off**; script should fail loud on miss.
+   Idle-metric headline: **7/9** memory vs iGPU, **8/11** compute vs cpu (unverified for paper until
+   row-by-row check is signed).
+2. **Bandwidth attribution confounded:** avg corner (N=197) is cache-resident → cannot isolate GDDR6
+   vs LPDDR5x main-memory bandwidth. Lightest ops are dispatch-bound (`layer_norm` / `residual_add`
+   ~81% of enqueue ceiling, 35–41% dispatch energy). GELU **19×→26×** (idle→dispatch-subtracted vs
+   iGPU) reflects **DirectML-vs-MIGraphX runtime asymmetry**, not bandwidth. Re-frame to **stack-level
+   efficiency** claim; defer bandwidth hypothesis to **large corner** (N=3136). Analogous to Phase-1
+   precision-decomposition discipline. Dispatch-subtracted memory cluster: **9/9** vs iGPU (asymmetric —
+   R9700 dispatch-subtracted vs HX370 idle-subtracted Step4).
+
+**Chris threads open:** transfer-baseline mootness (residency / `offload_copy=False`); cross-instrument
+framing (uProf package vs amd-smi `socket_power`); idle session-mean-of-4 vs Phase-1 single idle;
+pursue large-corner bandwidth test this phase y/n.
+
+**Artifacts (session `20260624_133311`):**
+
+| File | Role |
+|---|---|
+| `benchmark/results/runs_20260624_133311_r9700_enriched.csv` | Primary enriched sweep (committed) |
+| `benchmark/results/analysis_out_r9700.csv` | `analysis.py` per-op grid + fusion gap |
+| `benchmark/results/r9700_vs_hx370_comparison.csv` | Cross-engine join vs Phase-1 FP32 |
+| `benchmark/results/R9700_CROSS_ENGINE_REPORT.md` | Human-readable analysis summary |
+| `benchmark/results/STEP4_FOR_SHEET_primary.csv` | Phase-1 reference (git-fetched from `uProfAnalysis`) |
+| `benchmark/r9700_cross_engine_analysis.py` | Repro script for cross-engine join |
+| `paper/methodology_limitations_r9700.md` | Draft methodology / limitations |
+
+**Still open (tower / gate / commit):**
+
+- [ ] Gate review: per-row `window_energy_J` vs `mean_power × 30 s`; repeat CV plots
+- [ ] Harden cross-engine script (fail on join miss; emit dispatch-subtracted columns)
+- [ ] Reviewer sign-off on join + stack-level-efficiency reframe (before Chris / paper merge)
+- [ ] Flag weak ops (`sra_conv2d`, `group_norm`, `depthwise_conv2d` on idle metric)
+- [ ] Commit remaining analysis artifacts when review passes
 
 ### Phase 2 — R9700 Day 1–2 (historical)
 
