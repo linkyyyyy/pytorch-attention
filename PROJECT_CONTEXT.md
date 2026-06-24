@@ -465,11 +465,11 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 **Phase:** Phase 2 — R9700 (`RadeonR9700` branch).
 **Phase 1:** HX 370 operator sweep **complete** — measured findings in §7; Step 4 mapping done (2026-06-17).
-**Last update:** 2026-06-23 — Day 1: EP pivot (MIGraphX-direct) + Branch B power validated end-to-end.
+**Last update:** 2026-06-23 — Day 2: EP pivot (MIGraphX-direct) + Branch B power validated end-to-end.
 
 **Dated session log (2026-06-02 → present):** `PROJECT_ARCHIVE.md` — use for Hermes and historical lookup.
 
-### Phase 2 — R9700 Day 1 (2026-06-23)
+### Phase 2 — R9700 Day 2 (2026-06-23)
 
 **Decisions:** ROCm EP dead in ORT 1.23.1; MIGraphX EP broken on gfx1201 via ORT → **MIGraphX Python
 API direct** (Chris signed off). Power: **Branch B** (`socket_power` integration; accumulator dead).
