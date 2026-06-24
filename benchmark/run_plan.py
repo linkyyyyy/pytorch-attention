@@ -179,6 +179,17 @@ def execute_job(
     return rc
 
 
+def _measure_run_id(row: dict[str, str], engine: str) -> str:
+    op = row["operator"]
+    idx = row["shape_index"]
+    if engine == "r9700":
+        shape_class = row.get("shape_class", "").strip()
+        if shape_class:
+            return f"r9700_{shape_class}_{op}_s{idx}"
+        return f"r9700_{op}_s{idx}"
+    return f"{op}_{engine}_s{idx}"
+
+
 def iter_measure_jobs(
     plan_rows: list[dict[str, str]],
     engines: list[str],
@@ -186,11 +197,8 @@ def iter_measure_jobs(
     """(plan_row, engine, run_id) for each planned measure job."""
     jobs: list[tuple[dict[str, str], str, str]] = []
     for row in plan_rows:
-        op = row["operator"]
-        idx = row["shape_index"]
-        skip = parse_skip_engines(row.get("skip_engines", ""))
         for engine in engines:
-            run_id = f"{op}_{engine}_s{idx}"
+            run_id = _measure_run_id(row, engine)
             jobs.append((row, engine, run_id))
     return jobs
 
