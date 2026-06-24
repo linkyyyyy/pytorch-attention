@@ -78,9 +78,12 @@ python parse_energy.py --power-backend amdsmi --runs results/runs_r9700.csv \
   --gpu-power-dir results/gpu_power --outfile results/runs_r9700_enriched.csv
 
 ## 12. Gate review before trusting numbers
-- No [WARN] gfx_busy placement warnings on measure rows.
-- window_energy_method distribution: all counter_delta_uj, or all trapz (consistent).
-- No HOST-FEED-FALLBACK anywhere in harness logs.
-- idle_energy_J / dispatch_energy_J populated on measure rows.
-- spot-check one row: window_energy_J ≈ mean_power_W * 30 s; energy_per_op sane.
+- No [WARN] gfx_busy placement warnings on measure rows (`gfx_busy_mean_pct` ≥ 90).
+- **Method-string gate (gfx1201 / Branch B):** every measure row's `window_energy_method` must
+  **start with `trapz_power_w`** (e.g. `trapz_power_w:counter_nonmonotonic`). **FAIL** if any row
+  uses `counter_delta_uj` or other counter_delta path — the energy accumulator is dead on gfx1201.
+- `sweep_r9700_avg.sh` runs this gate automatically after enrich (`validate_enriched_gate`).
+- Pre-sweep: `GATE=1 ./sweep_r9700_avg.sh` — ffn_gemm avg s2 via run_plan + enrich (~3 min).
+- idle_energy_J / dispatch_energy_J populated on measure rows (after baselines in full sweep).
+- spot-check one row: window_energy_J ≈ mean_power_W × 30 s (~7 kJ on ffn_gemm avg); energy_per_op sane.
 Only then are R9700 numbers analysis-grade. Commit manually (Lincoln).
