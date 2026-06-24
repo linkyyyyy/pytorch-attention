@@ -1,0 +1,8 @@
+operator|shape_index|block_id|shape_class|tier|fusion_member|input_shape|skip_engines
+batch_norm|0|||isolated|False|1x256x56x56|
+residual_add|1|sdpa_avg|avg|isolated|False|197x768|
+qkv_proj_gemm|3|sdpa_avg|avg|isolated|True|197x768@768x768|
+qkv_proj_gemm|4|sdpa_avg|avg|isolated|True|197x768@768x768|
+qkv_proj_gemm|5|sdpa_avg|avg|isolated|True|197x768@768x768|
+attn_score_matmul|1|sdpa_avg|avg|isolated|True|12x197x64@12x64x197|
+xcit_cov_matmul|0|||isolated|False|12x64x197@12x197x64|

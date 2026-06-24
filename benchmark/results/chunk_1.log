@@ -1,0 +1,276 @@
+[gpu_power] device=0 interval=0.1s -> results/gpu_power/r9700_patch_embed_conv2d_s0.csv
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=patch_embed_conv2d opset=20 (read from patch_embed_conv2d.onnx)
+[MEASURE_SESSION] run_id=r9700_patch_embed_conv2d_s0 backend=migraphx_direct offload_copy=False sync_every=64
+[ROCM_IO] run_id=r9700_patch_embed_conv2d_s0 resident inputs (one H2D, gpu_sync drain)
+[EP_CHECK] run_id=r9700_patch_embed_conv2d_s0_r0 migraphx_direct: target=gpu; offload_copy=False; resident; sync_every=64
+[WARMUP_START] run_id=r9700_patch_embed_conv2d_s0_r0 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_patch_embed_conv2d_s0_r0
+[WINDOW_OPEN] run_id=r9700_patch_embed_conv2d_s0_r0 t_start=1782297281.509982 mode=measure engine=r9700 operator=patch_embed_conv2d
+[WINDOW_CLOSE] run_id=r9700_patch_embed_conv2d_s0_r0 t_end=1782297311.511949 iterations=847296 wall_time_s=30.001956
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_patch_embed_conv2d_s0_r1 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_patch_embed_conv2d_s0_r1
+[WINDOW_OPEN] run_id=r9700_patch_embed_conv2d_s0_r1 t_start=1782297321.513499 mode=measure engine=r9700 operator=patch_embed_conv2d
+[WINDOW_CLOSE] run_id=r9700_patch_embed_conv2d_s0_r1 t_end=1782297351.515660 iterations=841408 wall_time_s=30.002154
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_patch_embed_conv2d_s0_r2 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_patch_embed_conv2d_s0_r2
+[WINDOW_OPEN] run_id=r9700_patch_embed_conv2d_s0_r2 t_start=1782297361.517092 mode=measure engine=r9700 operator=patch_embed_conv2d
+[WINDOW_CLOSE] run_id=r9700_patch_embed_conv2d_s0_r2 t_end=1782297391.517689 iterations=846336 wall_time_s=30.000592
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_patch_embed_conv2d_s0_r3 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_patch_embed_conv2d_s0_r3
+[WINDOW_OPEN] run_id=r9700_patch_embed_conv2d_s0_r3 t_start=1782297401.519279 mode=measure engine=r9700 operator=patch_embed_conv2d
+[WINDOW_CLOSE] run_id=r9700_patch_embed_conv2d_s0_r3 t_end=1782297431.521668 iterations=846912 wall_time_s=30.002385
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_patch_embed_conv2d_s0_r4 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_patch_embed_conv2d_s0_r4
+[WINDOW_OPEN] run_id=r9700_patch_embed_conv2d_s0_r4 t_start=1782297441.523696 mode=measure engine=r9700 operator=patch_embed_conv2d
+[WINDOW_CLOSE] run_id=r9700_patch_embed_conv2d_s0_r4 t_end=1782297471.524934 iterations=845952 wall_time_s=30.001234
+[gpu_power] shutdown n_samples=2019 wall_s=201.900 energy_uj_populated=no
+[gpu_power] device=0 interval=0.1s -> results/gpu_power/r9700_downsample_conv2d_s0.csv
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=downsample_conv2d opset=20 (read from downsample_conv2d.onnx)
+[MEASURE_SESSION] run_id=r9700_downsample_conv2d_s0 backend=migraphx_direct offload_copy=False sync_every=64
+[ROCM_IO] run_id=r9700_downsample_conv2d_s0 resident inputs (one H2D, gpu_sync drain)
+[EP_CHECK] run_id=r9700_downsample_conv2d_s0_r0 migraphx_direct: target=gpu; offload_copy=False; resident; sync_every=64
+[WARMUP_START] run_id=r9700_downsample_conv2d_s0_r0 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_downsample_conv2d_s0_r0
+[WINDOW_OPEN] run_id=r9700_downsample_conv2d_s0_r0 t_start=1782297489.467981 mode=measure engine=r9700 operator=downsample_conv2d
+[WINDOW_CLOSE] run_id=r9700_downsample_conv2d_s0_r0 t_end=1782297519.473516 iterations=44416 wall_time_s=30.005524
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_downsample_conv2d_s0_r1 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_downsample_conv2d_s0_r1
+[WINDOW_OPEN] run_id=r9700_downsample_conv2d_s0_r1 t_start=1782297529.476120 mode=measure engine=r9700 operator=downsample_conv2d
+[WINDOW_CLOSE] run_id=r9700_downsample_conv2d_s0_r1 t_end=1782297559.511765 iterations=44544 wall_time_s=30.035638
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_downsample_conv2d_s0_r2 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_downsample_conv2d_s0_r2
+[WINDOW_OPEN] run_id=r9700_downsample_conv2d_s0_r2 t_start=1782297569.519796 mode=measure engine=r9700 operator=downsample_conv2d
+[WINDOW_CLOSE] run_id=r9700_downsample_conv2d_s0_r2 t_end=1782297599.545315 iterations=44480 wall_time_s=30.025514
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_downsample_conv2d_s0_r3 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_downsample_conv2d_s0_r3
+[WINDOW_OPEN] run_id=r9700_downsample_conv2d_s0_r3 t_start=1782297609.555209 mode=measure engine=r9700 operator=downsample_conv2d
+[WINDOW_CLOSE] run_id=r9700_downsample_conv2d_s0_r3 t_end=1782297639.558039 iterations=44416 wall_time_s=30.002826
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_downsample_conv2d_s0_r4 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_downsample_conv2d_s0_r4
+[WINDOW_OPEN] run_id=r9700_downsample_conv2d_s0_r4 t_start=1782297649.568491 mode=measure engine=r9700 operator=downsample_conv2d
+[WINDOW_CLOSE] run_id=r9700_downsample_conv2d_s0_r4 t_end=1782297679.606518 iterations=44480 wall_time_s=30.038023
+[gpu_power] shutdown n_samples=2030 wall_s=203.000 energy_uj_populated=no
+[gpu_power] device=0 interval=0.1s -> results/gpu_power/r9700_avg_ffn_gemm_s2.csv
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=ffn_gemm opset=20 (read from ffn_gemm_s2.onnx)
+[MEASURE_SESSION] run_id=r9700_avg_ffn_gemm_s2 backend=migraphx_direct offload_copy=False sync_every=64
+[ROCM_IO] run_id=r9700_avg_ffn_gemm_s2 resident inputs (one H2D, gpu_sync drain)
+[EP_CHECK] run_id=r9700_avg_ffn_gemm_s2_r0 migraphx_direct: target=gpu; offload_copy=False; resident; sync_every=64
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s2_r0 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s2_r0
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s2_r0 t_start=1782297696.241049 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s2_r0 t_end=1782297726.246462 iterations=241920 wall_time_s=30.005407
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s2_r1 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s2_r1
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s2_r1 t_start=1782297736.252820 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s2_r1 t_end=1782297766.253813 iterations=241216 wall_time_s=30.000987
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s2_r2 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s2_r2
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s2_r2 t_start=1782297776.257180 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s2_r2 t_end=1782297806.262763 iterations=241152 wall_time_s=30.005578
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s2_r3 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s2_r3
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s2_r3 t_start=1782297816.264893 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s2_r3 t_end=1782297846.265426 iterations=241216 wall_time_s=30.000529
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s2_r4 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s2_r4
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s2_r4 t_start=1782297856.268300 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s2_r4 t_end=1782297886.269953 iterations=240832 wall_time_s=30.001649
+[gpu_power] shutdown n_samples=2016 wall_s=201.600 energy_uj_populated=no
+[gpu_power] device=0 interval=0.1s -> results/gpu_power/r9700_avg_ffn_gemm_s3.csv
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=ffn_gemm opset=20 (read from ffn_gemm_s3.onnx)
+[MEASURE_SESSION] run_id=r9700_avg_ffn_gemm_s3 backend=migraphx_direct offload_copy=False sync_every=64
+[ROCM_IO] run_id=r9700_avg_ffn_gemm_s3 resident inputs (one H2D, gpu_sync drain)
+[EP_CHECK] run_id=r9700_avg_ffn_gemm_s3_r0 migraphx_direct: target=gpu; offload_copy=False; resident; sync_every=64
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s3_r0 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s3_r0
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s3_r0 t_start=1782297902.946309 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s3_r0 t_end=1782297932.946945 iterations=223936 wall_time_s=30.000630
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s3_r1 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s3_r1
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s3_r1 t_start=1782297942.952170 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s3_r1 t_end=1782297972.958895 iterations=223872 wall_time_s=30.006720
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s3_r2 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s3_r2
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s3_r2 t_start=1782297982.963537 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s3_r2 t_end=1782298012.966439 iterations=223744 wall_time_s=30.002898
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s3_r3 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s3_r3
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s3_r3 t_start=1782298022.972169 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s3_r3 t_end=1782298052.977603 iterations=223744 wall_time_s=30.005429
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_ffn_gemm_s3_r4 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_ffn_gemm_s3_r4
+[WINDOW_OPEN] run_id=r9700_avg_ffn_gemm_s3_r4 t_start=1782298062.979888 mode=measure engine=r9700 operator=ffn_gemm
+[WINDOW_CLOSE] run_id=r9700_avg_ffn_gemm_s3_r4 t_end=1782298092.984674 iterations=223744 wall_time_s=30.004782
+[gpu_power] shutdown n_samples=2016 wall_s=201.600 energy_uj_populated=no
+[gpu_power] device=0 interval=0.1s -> results/gpu_power/r9700_avg_gelu_s1.csv
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=gelu opset=20 (read from gelu_s1.onnx)
+[MEASURE_SESSION] run_id=r9700_avg_gelu_s1 backend=migraphx_direct offload_copy=False sync_every=64
+[ROCM_IO] run_id=r9700_avg_gelu_s1 resident inputs (one H2D, gpu_sync drain)
+[EP_CHECK] run_id=r9700_avg_gelu_s1_r0 migraphx_direct: target=gpu; offload_copy=False; resident; sync_every=64
+[WARMUP_START] run_id=r9700_avg_gelu_s1_r0 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_gelu_s1_r0
+[WINDOW_OPEN] run_id=r9700_avg_gelu_s1_r0 t_start=1782298105.204538 mode=measure engine=r9700 operator=gelu
+[WINDOW_CLOSE] run_id=r9700_avg_gelu_s1_r0 t_end=1782298135.204787 iterations=4941248 wall_time_s=30.000243
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_gelu_s1_r1 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_gelu_s1_r1
+[WINDOW_OPEN] run_id=r9700_avg_gelu_s1_r1 t_start=1782298145.205260 mode=measure engine=r9700 operator=gelu
+[WINDOW_CLOSE] run_id=r9700_avg_gelu_s1_r1 t_end=1782298175.205470 iterations=4943936 wall_time_s=30.000205
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_gelu_s1_r2 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_gelu_s1_r2
+[WINDOW_OPEN] run_id=r9700_avg_gelu_s1_r2 t_start=1782298185.205914 mode=measure engine=r9700 operator=gelu
+[WINDOW_CLOSE] run_id=r9700_avg_gelu_s1_r2 t_end=1782298215.205930 iterations=4947776 wall_time_s=30.000013
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_gelu_s1_r3 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_gelu_s1_r3
+[WINDOW_OPEN] run_id=r9700_avg_gelu_s1_r3 t_start=1782298225.206329 mode=measure engine=r9700 operator=gelu
+[WINDOW_CLOSE] run_id=r9700_avg_gelu_s1_r3 t_end=1782298255.206353 iterations=4951040 wall_time_s=30.000020
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_gelu_s1_r4 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_gelu_s1_r4
+[WINDOW_OPEN] run_id=r9700_avg_gelu_s1_r4 t_start=1782298265.206744 mode=measure engine=r9700 operator=gelu
+[WINDOW_CLOSE] run_id=r9700_avg_gelu_s1_r4 t_end=1782298295.207020 iterations=4952896 wall_time_s=30.000267
+[gpu_power] shutdown n_samples=1970 wall_s=197.000 energy_uj_populated=no
+[gpu_power] device=0 interval=0.1s -> results/gpu_power/r9700_avg_layer_norm_s1.csv
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=layer_norm opset=20 (read from layer_norm_s1.onnx)
+[MEASURE_SESSION] run_id=r9700_avg_layer_norm_s1 backend=migraphx_direct offload_copy=False sync_every=64
+[ROCM_IO] run_id=r9700_avg_layer_norm_s1 resident inputs (one H2D, gpu_sync drain)
+[EP_CHECK] run_id=r9700_avg_layer_norm_s1_r0 migraphx_direct: target=gpu; offload_copy=False; resident; sync_every=64
+[WARMUP_START] run_id=r9700_avg_layer_norm_s1_r0 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_layer_norm_s1_r0
+[WINDOW_OPEN] run_id=r9700_avg_layer_norm_s1_r0 t_start=1782298311.695490 mode=measure engine=r9700 operator=layer_norm
+[WINDOW_CLOSE] run_id=r9700_avg_layer_norm_s1_r0 t_end=1782298341.695735 iterations=7120832 wall_time_s=30.000239
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_layer_norm_s1_r1 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_layer_norm_s1_r1
+[WINDOW_OPEN] run_id=r9700_avg_layer_norm_s1_r1 t_start=1782298351.696293 mode=measure engine=r9700 operator=layer_norm
+[WINDOW_CLOSE] run_id=r9700_avg_layer_norm_s1_r1 t_end=1782298381.696441 iterations=7089216 wall_time_s=30.000141
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_layer_norm_s1_r2 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_layer_norm_s1_r2
+[WINDOW_OPEN] run_id=r9700_avg_layer_norm_s1_r2 t_start=1782298391.696873 mode=measure engine=r9700 operator=layer_norm
+[WINDOW_CLOSE] run_id=r9700_avg_layer_norm_s1_r2 t_end=1782298421.697011 iterations=7196416 wall_time_s=30.000132
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_layer_norm_s1_r3 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_layer_norm_s1_r3
+[WINDOW_OPEN] run_id=r9700_avg_layer_norm_s1_r3 t_start=1782298431.697433 mode=measure engine=r9700 operator=layer_norm
+[WINDOW_CLOSE] run_id=r9700_avg_layer_norm_s1_r3 t_end=1782298461.697542 iterations=7133888 wall_time_s=30.000104
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_avg_layer_norm_s1_r4 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_avg_layer_norm_s1_r4
+[WINDOW_OPEN] run_id=r9700_avg_layer_norm_s1_r4 t_start=1782298471.697963 mode=measure engine=r9700 operator=layer_norm
+[WINDOW_CLOSE] run_id=r9700_avg_layer_norm_s1_r4 t_end=1782298501.698154 iterations=7126336 wall_time_s=30.000187
+[gpu_power] shutdown n_samples=2016 wall_s=201.600 energy_uj_populated=no
+[gpu_power] device=0 interval=0.1s -> results/gpu_power/r9700_group_norm_s0.csv
+========================================================================
+[harness] Operator energy window driver (energy measured by uProf, not here)
+[harness] opset=20 threads=12 opt=ORT_ENABLE_ALL
+[harness] analysis formula: energy_per_op = (window_energy - dispatch_energy) / iterations
+========================================================================
+[graph] operator=group_norm opset=20 (read from group_norm.onnx)
+[MEASURE_SESSION] run_id=r9700_group_norm_s0 backend=migraphx_direct offload_copy=False sync_every=64
+[ROCM_IO] run_id=r9700_group_norm_s0 resident inputs (one H2D, gpu_sync drain)
+[EP_CHECK] run_id=r9700_group_norm_s0_r0 migraphx_direct: target=gpu; offload_copy=False; resident; sync_every=64
+[WARMUP_START] run_id=r9700_group_norm_s0_r0 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_group_norm_s0_r0
+[WINDOW_OPEN] run_id=r9700_group_norm_s0_r0 t_start=1782298518.822502 mode=measure engine=r9700 operator=group_norm
+[WINDOW_CLOSE] run_id=r9700_group_norm_s0_r0 t_end=1782298548.825172 iterations=586048 wall_time_s=30.002665
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_group_norm_s0_r1 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_group_norm_s0_r1
+[WINDOW_OPEN] run_id=r9700_group_norm_s0_r1 t_start=1782298558.826244 mode=measure engine=r9700 operator=group_norm
+[WINDOW_CLOSE] run_id=r9700_group_norm_s0_r1 t_end=1782298588.828036 iterations=585472 wall_time_s=30.001786
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_group_norm_s0_r2 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_group_norm_s0_r2
+[WINDOW_OPEN] run_id=r9700_group_norm_s0_r2 t_start=1782298598.830258 mode=measure engine=r9700 operator=group_norm
+[WINDOW_CLOSE] run_id=r9700_group_norm_s0_r2 t_end=1782298628.830348 iterations=585088 wall_time_s=30.000086
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_group_norm_s0_r3 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_group_norm_s0_r3
+[WINDOW_OPEN] run_id=r9700_group_norm_s0_r3 t_start=1782298638.830786 mode=measure engine=r9700 operator=group_norm
+[WINDOW_CLOSE] run_id=r9700_group_norm_s0_r3 t_end=1782298668.832719 iterations=585920 wall_time_s=30.001927
+[COOLDOWN] sleeping 5.0s before next repeat
+[WARMUP_START] run_id=r9700_group_norm_s0_r4 mode=measure engine=r9700 warmup_s=5.0 threads=12 graph_opt=ORT_ENABLE_ALL
+[WARMUP_END] run_id=r9700_group_norm_s0_r4
+[WINDOW_OPEN] run_id=r9700_group_norm_s0_r4 t_start=1782298678.833056 mode=measure engine=r9700 operator=group_norm
+[WINDOW_CLOSE] run_id=r9700_group_norm_s0_r4 t_end=1782298708.835499 iterations=585152 wall_time_s=30.002438
+[gpu_power] shutdown n_samples=2021 wall_s=202.100 energy_uj_populated=no
+[run_plan] plan=results/plan_chunk_1.txt rows=7 jobs=7 dry_run=False
+
+[RUN] r9700_patch_embed_conv2d_s0
+  sampler: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/gpu_power.py --out results/gpu_power/r9700_patch_embed_conv2d_s0.csv --interval 0.1 --device-id 0
+  harness: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/harness.py --operator patch_embed_conv2d --engine r9700 --duration 30.0 --warmup 5.0 --repeats 5 --device-id 0 --mode measure --shape-index 0 --tier isolated --run-id r9700_patch_embed_conv2d_s0 --outfile results/runs_20260624_133311_r9700.csv
+
+[RUN] r9700_downsample_conv2d_s0
+  sampler: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/gpu_power.py --out results/gpu_power/r9700_downsample_conv2d_s0.csv --interval 0.1 --device-id 0
+  harness: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/harness.py --operator downsample_conv2d --engine r9700 --duration 30.0 --warmup 5.0 --repeats 5 --device-id 0 --mode measure --shape-index 0 --tier isolated --run-id r9700_downsample_conv2d_s0 --outfile results/runs_20260624_133311_r9700.csv
+
+[RUN] r9700_avg_ffn_gemm_s2
+  sampler: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/gpu_power.py --out results/gpu_power/r9700_avg_ffn_gemm_s2.csv --interval 0.1 --device-id 0
+  harness: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/harness.py --operator ffn_gemm --engine r9700 --duration 30.0 --warmup 5.0 --repeats 5 --device-id 0 --mode measure --shape-index 2 --tier isolated --run-id r9700_avg_ffn_gemm_s2 --outfile results/runs_20260624_133311_r9700.csv --block-id sdpa_avg --shape-class avg
+
+[RUN] r9700_avg_ffn_gemm_s3
+  sampler: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/gpu_power.py --out results/gpu_power/r9700_avg_ffn_gemm_s3.csv --interval 0.1 --device-id 0
+  harness: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/harness.py --operator ffn_gemm --engine r9700 --duration 30.0 --warmup 5.0 --repeats 5 --device-id 0 --mode measure --shape-index 3 --tier isolated --run-id r9700_avg_ffn_gemm_s3 --outfile results/runs_20260624_133311_r9700.csv --block-id sdpa_avg --shape-class avg
+
+[RUN] r9700_avg_gelu_s1
+  sampler: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/gpu_power.py --out results/gpu_power/r9700_avg_gelu_s1.csv --interval 0.1 --device-id 0
+  harness: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/harness.py --operator gelu --engine r9700 --duration 30.0 --warmup 5.0 --repeats 5 --device-id 0 --mode measure --shape-index 1 --tier isolated --run-id r9700_avg_gelu_s1 --outfile results/runs_20260624_133311_r9700.csv --block-id sdpa_avg --shape-class avg
+
+[RUN] r9700_avg_layer_norm_s1
+  sampler: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/gpu_power.py --out results/gpu_power/r9700_avg_layer_norm_s1.csv --interval 0.1 --device-id 0
+  harness: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/harness.py --operator layer_norm --engine r9700 --duration 30.0 --warmup 5.0 --repeats 5 --device-id 0 --mode measure --shape-index 1 --tier isolated --run-id r9700_avg_layer_norm_s1 --outfile results/runs_20260624_133311_r9700.csv --block-id sdpa_avg --shape-class avg
+
+[RUN] r9700_group_norm_s0
+  sampler: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/gpu_power.py --out results/gpu_power/r9700_group_norm_s0.csv --interval 0.1 --device-id 0
+  harness: /usr/bin/python3 /home/amd/ryzen_benchmarks/pytorch-attention/benchmark/harness.py --operator group_norm --engine r9700 --duration 30.0 --warmup 5.0 --repeats 5 --device-id 0 --mode measure --shape-index 0 --tier isolated --run-id r9700_group_norm_s0 --outfile results/runs_20260624_133311_r9700.csv
+
+[run_plan] done runs=7 skips=0 failures=0

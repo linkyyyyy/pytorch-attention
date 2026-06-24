@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -118,6 +120,44 @@ def format_command(cmd: list[str]) -> str:
     return subprocess.list2cmdline(cmd)
 
 
+def _kill_stale_gpu_power_samplers() -> None:
+    """Defensive: terminate orphaned gpu_power.py from a prior interrupted bracket."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        subprocess.run(
+            ["pkill", f"-{int(sig)}", "-f", r"gpu_power\.py"],
+            cwd=BENCHMARK_DIR,
+            capture_output=True,
+        )
+        time.sleep(0.2)
+
+
+def _stop_sampler(sampler: subprocess.Popen, *, timeout: float = 10.0) -> None:
+    """Stop sampler process group; SIGKILL fallback if SIGTERM does not reap."""
+    if sampler.poll() is not None:
+        return
+    try:
+        os.killpg(sampler.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except (PermissionError, OSError):
+        sampler.terminate()
+    try:
+        sampler.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(sampler.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except (PermissionError, OSError):
+        sampler.kill()
+    try:
+        sampler.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        print(f"[WARN] gpu_power sampler pid={sampler.pid} did not exit after SIGKILL")
+
+
 def execute_job(
     harness_cmd: list[str],
     run_id: str,
@@ -156,16 +196,11 @@ def execute_job(
         return 0
 
     Path(args.gpu_power_dir).mkdir(parents=True, exist_ok=True)
-    sampler = subprocess.Popen(sampler_cmd, cwd=BENCHMARK_DIR)
+    sampler = subprocess.Popen(sampler_cmd, cwd=BENCHMARK_DIR, start_new_session=True)
     time.sleep(args.sampler_lead)
     rc = subprocess.run(harness_cmd, cwd=BENCHMARK_DIR).returncode
     time.sleep(args.sampler_lead)
-    sampler.terminate()
-    try:
-        sampler.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        sampler.kill()
-        sampler.wait()
+    _stop_sampler(sampler)
 
     if (
         (not out_csv.exists())
@@ -217,6 +252,9 @@ def run_plan(args: argparse.Namespace) -> int:
     skip_n = 0
 
     print(f"[run_plan] plan={plan_path} rows={len(plan_rows)} jobs={len(jobs)} dry_run={args.dry_run}")
+
+    if args.power_backend == "amdsmi" and not args.dry_run:
+        _kill_stale_gpu_power_samplers()
 
     for row, engine, run_id in jobs:
         op = row["operator"]

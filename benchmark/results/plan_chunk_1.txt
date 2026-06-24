@@ -1,0 +1,8 @@
+operator|shape_index|block_id|shape_class|tier|fusion_member|input_shape|skip_engines
+patch_embed_conv2d|0|||isolated|False|1x3x224x224|
+downsample_conv2d|0|||isolated|False|1x768x56x56|
+ffn_gemm|2|sdpa_avg|avg|isolated|False|197x768@768x3072|
+ffn_gemm|3|sdpa_avg|avg|isolated|False|197x3072@3072x768|
+gelu|1|sdpa_avg|avg|isolated|False|197x3072|
+layer_norm|1|sdpa_avg|avg|isolated|False|197x768|
+group_norm|0|||isolated|False|1x768x14x14,groups=1|

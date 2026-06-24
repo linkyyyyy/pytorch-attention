@@ -1,0 +1,8 @@
+operator|shape_index|block_id|shape_class|tier|fusion_member|input_shape|skip_engines
+softmax|1|sdpa_avg|avg|isolated|True|12x197x197|
+attn_value_matmul|1|sdpa_avg|avg|isolated|True|12x197x197@12x197x64|
+out_proj_gemm|1|sdpa_avg|avg|isolated|True|197x768@768x768|
+sra_conv2d|0|||isolated|False|1x768x56x56|
+avg_pool_token_mixer|0|||isolated|False|1x768x14x14|
+depthwise_conv2d|0|||isolated|False|1x768x14x14|
+attn_block_fused|1|sdpa_avg|avg|fused_block|True|197x768|npu

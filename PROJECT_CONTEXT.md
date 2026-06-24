@@ -98,7 +98,7 @@ Per-engine comparison relies on **controlled execution** (one ORT execution prov
 **baseline subtraction**, not separate hardware power rails. State this explicitly in the paper
 methodology.
 
-### R9700 Measurement Scope Notes (Phase 2 — updated 2026-06-23)
+### R9700 Measurement Scope Notes (Phase 2 — updated 2026-06-24)
 
 - **Runtime (Chris signed off):** engine `r9700` uses the **MIGraphX Python API directly**, not ORT.
   ROCm EP was removed from ORT 1.23+; the wheel's only GPU EP is MIGraphX, which fails on gfx1201
@@ -107,28 +107,24 @@ methodology.
 - **Execution:** `compile(get_target("gpu"), offload_copy=False)` + one `to_gpu` upload (resident
   inputs). `run()` enqueues async (~4 µs) vs ~117 µs kernel — harness loops `sync_every` (default
   **64**, `--sync-every`) then `gpu_sync()`; injected `execute_fn` + `iter_multiplier` in shared
-  `_run_repeat` (CSV schema unchanged). Day-1 validated: gfx_busy ~100%, ~242 W active (idle ~33 W).
+  `_run_repeat` (CSV schema unchanged).
 - **Power (Branch B):** discrete card invisible to uProf; `gpu_power.py` amd-smi sampler brackets
-  each harness run. Energy accumulator **dead** on gfx1201 (`energy_accumulator=0`) → trapezoidal
-  integration of `socket_power` (watts, no /1000; `current_socket_power='N/A'`). Branch-A selector
-  fixed 2026-06-23: `parse_energy` requires `e_end > e_start`; `gpu_power` leaves `energy_uj` blank
-  when accumulator is 0 (no fake `"0.0"`). Re-enrich validate trace → expect ~7 kJ,
-  `window_energy_method=trapezoid`.
-- **Cross-instrument caveat:** HX 370 on uProf package (Windows/DML/Vitis) vs R9700 board telemetry
-  (TBP-class, Linux/ROCm). Idle-subtracted within-engine deltas are clean; absolute cross-machine
-  comparisons carry the caveat.
-- **Net metric:** same headline formula as §3 on the discrete rail. **Idle + dispatch baselines
-  still TODO.** Transfer baseline (Chris Option 2) likely **moot** — `offload_copy=False` residency
-  = one H2D, no per-iter transfer; confirm with Chris before building one.
-- **Sweep correctness (`operators.py`, 2026-06-23):** `shape_index` 0=small (N=49) / 1=avg (N=197) /
-  2=large (N=3136); Phase-1 headline corner = **avg**. Day-1 validation used index 0 (small) —
-  mechanism-valid, not the headline corner. Default `operators.py` builds index 0 only; run
-  `operators.py --all-shapes` before sweep. Avg index is **not** uniformly 1 (XCiT etc. have own
-  profiles) — drive sweep via `profile_indices_for_corner(op, 'avg')`, never hardcode `--shape-index 1`.
-- **Paper caveats:** MIGraphX-direct runtime; gfx1201 kernel immaturity (ecosystem-wide); no
-  instantaneous power (socket integration OK for Tier 1 steady-state, weak for Tier 2 transients).
-- **Code:** branch `RadeonR9700`; `harness.py` (migraphx_direct), `gpu_power.py`, smoke/diag scripts.
-  Runbook: `benchmark/RADEON_R9700_RUNBOOK.md` (gates partially superseded by Day-1 decisions).
+  each harness/run_plan job externally (harness never spawns it). Energy accumulator **dead** on
+  gfx1201 → trapezoidal integration of `socket_power` (watts, no /1000). **Branch-B fixes (committed
+  on branch):** `parse_energy.amdsmi_window_energy` uses `e_end > e_start`; `gpu_power.read_sample`
+  leaves `energy_uj` blank when `energy_accumulator==0`. Post-enrich gate: `window_energy_method`
+  must start with `trapz_power_w` (not `counter_delta_uj`).
+- **Orchestration:** `sweep_r9700_avg.sh` — `GATE=1` (ffn_gemm avg s2 smoke) then `RUN=1` (21 plan
+  rows × 5 repeats, chunked). `run_plan.py` r9700 run-ids: `r9700_{shape_class}_{op}_s{idx}`; sampler
+  lifecycle hardened (`start_new_session`, process-group kill, stale `pkill` at session start).
+  Dispatch baseline run-id **`dispatch_r9700_base`** (not `*_r9700` — `_strip_repeat_suffix` trap).
+- **Net metric:** same headline formula as §3 on the discrete rail. Full sweep captures open/mid/close
+  **idle** + **`dispatch_r9700_base`** in-session. Transfer baseline likely **moot** (`offload_copy=False`);
+  confirm with Chris.
+- **Sweep correctness:** avg corner via `operators.py --all-shapes` + `--sweep-plan --corner avg`;
+  drive indices with `profile_indices_for_corner(op, 'avg')`, not hardcoded `--shape-index 1`.
+- **Code:** `harness.py`, `gpu_power.py`, `parse_energy.py`, `run_plan.py`, `sweep_r9700_avg.sh`.
+  Guides: `R9700_PRE_SWEEP_VERIFY.md`, `R9700_SWEEP_HANDOFF.md`.
 
 ---
 
@@ -400,7 +396,7 @@ Full method and sign-divergence findings summarized in prior context — see arc
 | Measurements | 1 week | **Done (2026-06-12)** — three-engine production sweep captured. |
 | Refinement and validation | 1 week | **Done (2026-06-17)** — trust validation, cpu_INT8 decomposition, Step 4 mapping. |
 | Preparation of the report | 2 weeks | In progress (HX 370 numbers validated). |
-| **Phase 2 — R9700 fourth engine** | ~1 week | **← current phase.** Day 1 (2026-06-23): MIGraphX-direct path + Branch B power validated. Sweep pending. |
+| **Phase 2 — R9700 fourth engine** | ~1 week | **Sweep captured 2026-06-24.** Analysis/validation pending. |
 
 **Operator ordering tip:** GEMM first as a *pipeline plumbing test* (simplest op, proves the loop),
 then move immediately to **scaled-dot-product attention** as the first *real* operator — that's what
@@ -465,26 +461,40 @@ an un-fused single GEMM can make the NPU look bad for boring reasons.
 
 **Phase:** Phase 2 — R9700 (`RadeonR9700` branch).
 **Phase 1:** HX 370 operator sweep **complete** — measured findings in §7; Step 4 mapping done (2026-06-17).
-**Last update:** 2026-06-23 — Day 2: EP pivot (MIGraphX-direct) + Branch B power validated end-to-end.
+**Last update:** 2026-06-24 — full avg-corner R9700 sweep captured; post-sweep validation/analysis pending.
 
 **Dated session log (2026-06-02 → present):** `PROJECT_ARCHIVE.md` — use for Hermes and historical lookup.
 
-### Phase 2 — R9700 Day 2 (2026-06-23)
+### Phase 2 — R9700 (2026-06-24): full sweep captured
 
-**Decisions:** ROCm EP dead in ORT 1.23.1; MIGraphX EP broken on gfx1201 via ORT → **MIGraphX Python
-API direct** (Chris signed off). Power: **Branch B** (`socket_power` integration; accumulator dead).
-Committed on `RadeonR9700`: `harness.py`, `gpu_power.py`, `migraphx_smoke.py`, `migraphx_measure_one.py`,
-`smoke_pathb.sh`, `validate_r9700_integrated.sh`, `diag_r9700.sh`, `mgx_core_test.sh`.
+**Session:** `20260624_133311` — `RUN=1 ./sweep_r9700_avg.sh` completed after `GATE=1` pass.
+**Primary artifact (force-staged):** `benchmark/results/runs_20260624_133311_r9700_enriched.csv`
+(~110 rows: 21 avg-corner plan entries × 5 repeats + idle/dispatch baselines). All measure rows
+observed `window_energy_method=trapz_power_w:*`, `gfx_busy_mean_pct` ~100% on compute ops.
 
-**Analysis fix (staged 2026-06-23, off-tower):** `parse_energy.amdsmi_window_energy` Branch-A guard
-`e_end >= e_start` → `e_end > e_start`; `gpu_power.read_sample` skips `energy_uj` when accumulator==0.
-Re-enrich validate trace → expect ~7 kJ, `window_energy_method=trapezoid`.
+**Python/script changes on branch (tower-validated):**
 
-**Open (next session):**
-- [off-tower] Re-enrich today's validate trace with staged parse/gpu_power fixes
-- [tower] `operators.py --all-shapes`; sweep via `profile_indices_for_corner(op,'avg')` (not hardcoded index 1)
-- [tower] r9700 idle + dispatch baselines (transfer baseline likely moot — confirm w/ Chris)
-- [tower] 21-op sweep (MIGraphX-direct, **avg** corner)
+| File | Change |
+|---|---|
+| `harness.py` | `r9700` = MIGraphX-direct (`execute_fn`, `iter_multiplier`, `--sync-every`); host-feed I/O policy |
+| `gpu_power.py` | `socket_power` (W); blank `energy_uj` when accumulator==0 |
+| `parse_energy.py` | Branch-A guard `e_end > e_start`; amdsmi join unchanged |
+| `run_plan.py` | r9700 run-id `r9700_{shape_class}_{op}_s{idx}`; sampler PG kill + stale cleanup |
+| `sweep_r9700_avg.sh` | `GATE=1` / `RUN=1`; `dispatch_r9700_base`; method-string gate post-enrich |
+
+**Done:** GATE=1 (~8.9 kJ avg `ffn_gemm` s2); full sweep + enrich; automated `[GATE OK]` on method strings.
+
+**Next (validation / parsing — may be done later today, off-tower OK):**
+- [ ] Gate review: per-row `window_energy_J` vs `mean_power × 30 s`; repeat CV; idle drift (open vs close)
+- [ ] Run `analysis.py` (or equivalent) on enriched CSV → `energy_per_op_J` headline grid
+- [ ] Cross-engine comparison framing vs HX 370 §7 (caveat: different instrument + runtime)
+- [ ] Flag weak/gfx1201-immature ops; confirm transfer baseline moot with Chris
+- [ ] Commit staged artifacts + script changes when review passes
+
+### Phase 2 — R9700 Day 1–2 (historical)
+
+**Decisions:** MIGraphX-direct runtime; Branch B power; Day-1 small-corner ~7.3 kJ re-enrich proved parser path.
+See `R9700_DAY1_ENERGY_STATUS.md`, `R9700_PRE_SWEEP_VERIFY.md`.
 
 ### HX 370 / paper (backlog)
 

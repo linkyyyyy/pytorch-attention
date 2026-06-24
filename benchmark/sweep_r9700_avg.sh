@@ -23,6 +23,40 @@ GATE="${GATE:-0}"
 PYTHON="$(which python3)"
 
 # ---------------------------------------------------------------------------
+# gpu_power sampler lifecycle — orphan samplers corrupt CSV (concurrent writes).
+# ---------------------------------------------------------------------------
+kill_all_gpu_power_samplers() {
+  if pgrep -f 'gpu_power\.py' >/dev/null 2>&1; then
+    echo "[sampler] killing stale gpu_power.py process(es)"
+    pkill -TERM -f 'gpu_power\.py' 2>/dev/null || true
+    sleep 0.5
+    pkill -KILL -f 'gpu_power\.py' 2>/dev/null || true
+    sleep 0.2
+  fi
+}
+
+stop_sampler_pgid() {
+  local sp="$1"
+  local pgid
+  pgid=$(ps -o pgid= -p "$sp" 2>/dev/null | tr -d ' ')
+  if [ -z "$pgid" ]; then
+    return 0
+  fi
+  if kill -0 "$sp" 2>/dev/null; then
+    kill -TERM -- "-${pgid}" 2>/dev/null || kill -TERM "$sp" 2>/dev/null || true
+  fi
+  local i=0
+  while kill -0 "$sp" 2>/dev/null && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$sp" 2>/dev/null; then
+    kill -KILL -- "-${pgid}" 2>/dev/null || kill -KILL "$sp" 2>/dev/null || true
+  fi
+  wait "$sp" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # onnx path for one plan row (matches operators._onnx_path)
 # ---------------------------------------------------------------------------
 onnx_path_for_row() {
@@ -45,14 +79,11 @@ bracket_harness() {
   local power_csv="${GP}/${run_id}.csv"
   echo "[bracket] mode=${mode} run_id=${run_id} power=${power_csv}"
 
-  python3 gpu_power.py --out "$power_csv" --interval 0.1 --device-id 0 &
+  setsid python3 gpu_power.py --out "$power_csv" --interval 0.1 --device-id 0 &
   local sp=$!
 
   _bracket_cleanup() {
-    if kill -0 "$sp" 2>/dev/null; then
-      kill "$sp" 2>/dev/null
-      wait "$sp" 2>/dev/null
-    fi
+    stop_sampler_pgid "$sp"
   }
   trap _bracket_cleanup RETURN
 
@@ -177,7 +208,8 @@ run_avg_corner_gate() {
   echo "(~3 min: warmup 5s + 30s window × 1 repeat + sampler bracket)"
   echo ""
 
-  rm -f "$gate_out" "$gate_enriched"
+  kill_all_gpu_power_samplers
+  rm -f "$gate_out" "$gate_enriched" "${GP}/r9700_avg_ffn_gemm_s2.csv"
 
   python3 run_plan.py \
     --plan "$gate_plan" \
@@ -285,6 +317,8 @@ if [ "$RUN" != "1" ]; then
   echo "[gate] RUN!=1 — eyeball only, exiting 0"
   exit 0
 fi
+
+kill_all_gpu_power_samplers
 
 # ---------------------------------------------------------------------------
 # Step 5 — opening baselines
